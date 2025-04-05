@@ -333,6 +333,8 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         setPendingMessageId(null);
         setStreamedContent('');
         setChatNameUpdate(null);
+        setLastCompletedMessage(null);
+        setChatSuggestions([]);
 
         // Keep message chunks from this chat but clear other data
         const currentChunks: Record<string, string> = {};
@@ -362,6 +364,12 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
         if (messageCompletionCheckerRef.current) {
             clearInterval(messageCompletionCheckerRef.current);
+        }
+
+        // Clear suggestions timeout
+        if (suggestionsTimeoutRef.current) {
+            clearTimeout(suggestionsTimeoutRef.current);
+            suggestionsTimeoutRef.current = null;
         }
 
         const token = localStorage.getItem('jwt_token');
@@ -416,6 +424,9 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
             setIsConnected(false);
             setIsTyping(false);
             setPendingMessageId(null);
+            setLastCompletedMessage(null);
+            setChatNameUpdate(null);
+            setChatSuggestions([]);
             // Don't clear streamedContent here so it can remain visible in the UI
             currentChatIdRef.current = null;
 
@@ -432,6 +443,12 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
             if (messageCompletionCheckerRef.current) {
                 clearInterval(messageCompletionCheckerRef.current);
                 messageCompletionCheckerRef.current = null;
+            }
+
+            // Clear suggestions timeout
+            if (suggestionsTimeoutRef.current) {
+                clearTimeout(suggestionsTimeoutRef.current);
+                suggestionsTimeoutRef.current = null;
             }
         }
     }, []);

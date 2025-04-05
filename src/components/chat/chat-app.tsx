@@ -615,8 +615,9 @@ const ChatAppContent = () => {
 
     // Update chat history when a message is completed
     useEffect(() => {
-        if (lastCompletedMessage && activeChat) {
-            console.log("Processing completed message:", lastCompletedMessage.id);
+        // Only process if connected and message is present for the active chat
+        if (lastCompletedMessage && activeChat && isConnected) {
+            console.log("Processing completed message:", lastCompletedMessage.id, "for active chat:", activeChat);
             setChatHistory((prevHistory) =>
                 prevHistory.map((chat) => {
                     if (chat.id === activeChat) {
@@ -627,9 +628,9 @@ const ChatAppContent = () => {
                             content: lastCompletedMessage.content,
                             message_type: "ai",
                             status: MessageStatus.COMPLETED,
-                            created_at: new Date().toISOString(),
+                            created_at: new Date().toISOString(), // Ideally use server timestamp if available
                             updated_at: new Date().toISOString(),
-                            sources: [],
+                            sources: [], // Initialize potentially missing fields
                             reactions: [],
                             files: [],
                         };
@@ -656,8 +657,11 @@ const ChatAppContent = () => {
                 const otherChats = prev.filter(chat => chat.id !== activeChat);
                 return [updatedChat, ...otherChats];
             });
+
+            // Optional: Consider clearing lastCompletedMessage here if the context provides a setter
+            // e.g., clearLastCompletedMessage();
         }
-    }, [lastCompletedMessage, activeChat, deduplicateAndSortMessages]);
+    }, [lastCompletedMessage, activeChat, isConnected, deduplicateAndSortMessages]); // Added isConnected
 
     // Set mounted state
     useEffect(() => {
