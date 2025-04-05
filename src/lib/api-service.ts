@@ -42,14 +42,66 @@ apiClient.interceptors.response.use(
             }
         }
 
-        // Log the full error details for debugging
-        console.error('API Error:', {
+        // Extract useful error details for logging
+        const errorDetails = {
             status: error.response?.status,
             statusText: error.response?.statusText,
             data: error.response?.data,
             message: error.message,
             url: error.config?.url
-        });
+        };
+
+        // Log error details - avoid logging sensitive data
+        console.error('API Error:', errorDetails);
+
+        // Return a more user-friendly error message based on status code
+        if (error.response) {
+            const status = error.response.status;
+
+            // Try to extract error message from response data
+            let errorMessage = "Произошла ошибка при обработке запроса";
+            if (error.response.data) {
+                if (typeof error.response.data === 'string') {
+                    errorMessage = error.response.data;
+                } else if (error.response.data.detail) {
+                    errorMessage = error.response.data.detail;
+                } else if (error.response.data.message) {
+                    errorMessage = error.response.data.message;
+                } else if (error.response.data.error) {
+                    errorMessage = error.response.data.error;
+                }
+            }
+
+            // Customize error message based on status
+            switch (status) {
+                case 400:
+                    error.message = errorMessage || "Неверный запрос";
+                    break;
+                case 401:
+                    error.message = "Требуется авторизация";
+                    break;
+                case 403:
+                    error.message = "Доступ запрещен";
+                    break;
+                case 404:
+                    error.message = "Ресурс не найден";
+                    break;
+                case 408:
+                case 504:
+                    error.message = "Превышено время ожидания запроса";
+                    break;
+                case 500:
+                case 502:
+                case 503:
+                    error.message = "Ошибка сервера. Пожалуйста, попробуйте позже.";
+                    break;
+                default:
+                    error.message = errorMessage;
+            }
+        } else if (error.request) {
+            // The request was made but no response was received
+            error.message = "Нет ответа от сервера. Проверьте ваше подключение к интернету.";
+        }
 
         return Promise.reject(error);
     }

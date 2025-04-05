@@ -59,8 +59,50 @@ module.exports = {
                 lg: "var(--radius)",
                 md: "calc(var(--radius) - 2px)",
                 sm: "calc(var(--radius) - 4px)"
-            }
+            },
+            typography: {
+                DEFAULT: {
+                    css: {
+                        maxWidth: '100%',
+                        color: 'inherit',
+                        p: {
+                            marginTop: '0.75em',
+                            marginBottom: '0.75em',
+                        },
+                        a: {
+                            color: 'hsl(var(--primary))',
+                            fontWeight: '500',
+                            textDecoration: 'underline',
+                            '&:hover': {
+                                opacity: '0.8',
+                            },
+                        },
+                        'ol, ul': {
+                            paddingLeft: '1.25em',
+                        },
+                        'h1, h2, h3, h4, h5, h6': {
+                            fontWeight: '600',
+                            marginTop: '1.5em',
+                            marginBottom: '0.75em',
+                        },
+                        pre: {
+                            backgroundColor: 'hsl(var(--muted))',
+                            borderRadius: '0.375rem',
+                            padding: '0.75rem 1rem',
+                            overflowX: 'auto',
+                        },
+                        code: {
+                            backgroundColor: 'hsl(var(--muted))',
+                            borderRadius: '0.25rem',
+                            padding: '0.25rem 0.4rem',
+                            fontSize: '0.875em',
+                        },
+                    },
+                },
+            },
         }
     },
-    plugins: []
+    plugins: [
+        require('@tailwindcss/typography'),
+    ]
 }

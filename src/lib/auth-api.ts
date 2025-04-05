@@ -14,14 +14,20 @@ export class AuthApi {
 
             return response;
         } catch (error) {
-            const axiosError = error as AxiosError;
-            if (axiosError.response?.status === 401) {
-                throw new Error('Invalid username or password');
+            // Properly handle error responses
+            if (error instanceof AxiosError && error.response) {
+                if (error.response.status === 401) {
+                    throw new Error('Неверное имя пользователя или пароль');
+                } else if (error.response.data && error.response.data.detail) {
+                    throw new Error(error.response.data.detail);
+                }
             }
-            throw error;
+            // For network errors or unexpected issues
+            throw new Error('Ошибка при входе в систему. Пожалуйста, попробуйте позже.');
         }
     }
 
+    // Rest of the class remains the same
     static async signup(signupData: SignupRequest): Promise<SignupResponse> {
         try {
             const response = await ApiService.post<SignupResponse>('/auth/register', signupData);
@@ -33,15 +39,16 @@ export class AuthApi {
 
             return response;
         } catch (error) {
-            const axiosError = error as AxiosError;
-            if (axiosError.response?.status === 400) {
-                // Extract error message
-                const data = axiosError.response.data as any;
-                if (data.detail) {
-                    throw new Error(data.detail);
+            if (error instanceof AxiosError && error.response) {
+                if (error.response.status === 400) {
+                    // Extract error message
+                    const data = error.response.data as any;
+                    if (data.detail) {
+                        throw new Error(data.detail);
+                    }
                 }
             }
-            throw error;
+            throw new Error('Ошибка при регистрации. Пожалуйста, попробуйте позже.');
         }
     }
 

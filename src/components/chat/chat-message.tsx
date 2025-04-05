@@ -1,112 +1,143 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ThumbsUp, ThumbsDown, Copy, FileText, FileImage, File, Download, ExternalLink } from "lucide-react";
 import { extractDocumentReferences } from "@/lib/utils";
 import { formatDate } from "@/lib/utils";
-import { ChatMessage as ChatMessageType, MessageType, MessageTypeUpper, ReactionType, FileType } from "@/lib/types";
+import { ChatMessage as ChatMessageType, MessageType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { FileApi } from "@/lib/file-api";
+import { TypingAnimation } from "./typing-animation";
+import { MarkdownRenderer } from "./markdown-renderer";
 
 interface MessageProps {
     message: ChatMessageType;
     onReaction?: (messageId: string, reaction: 'like' | 'dislike') => void;
+    isTyping?: boolean;
+    typingContent?: string;
 }
 
-export function ChatMessage({ message, onReaction }: MessageProps) {
+export function ChatMessage({ message, onReaction, isTyping = false, typingContent = "" }: MessageProps) {
     const { id, content, message_type, created_at, reactions, files } = message;
 
-    // Make case-insensitive comparisons
+    // Make case-insensitive comparisons for consistent behavior
     const messageTypeLower = typeof message_type === 'string' ? message_type.toLowerCase() : '';
 
-    const isUser = messageTypeLower === MessageType.USER || messageTypeLower === "user" || message_type === MessageTypeUpper.USER;
-    const isSystem = messageTypeLower === MessageType.SYSTEM || messageTypeLower === "system" || message_type === MessageTypeUpper.SYSTEM;
-
-    // Debug logging to help diagnose issues
-    console.log(`Message ${id} type: ${message_type}, normalized: ${messageTypeLower}, isUser: ${isUser}, isSystem: ${isSystem}`);
+    // Determine message type consistently
+    const isUser = messageTypeLower === 'user';
+    const isSystem = messageTypeLower === 'system';
+    const isAssistant = messageTypeLower === 'ai';
 
     const [copied, setCopied] = useState(false);
+    const [animationComplete, setAnimationComplete] = useState(!isTyping);
+    const processedContentRef = useRef<string | null>(null);
+    const [lastTypingStatus, setLastTypingStatus] = useState(isTyping);
+    const messageContentRef = useRef<string>(content || "");
+    const typingContentRef = useRef<string>(typingContent || "");
 
-    // Check if message has a reaction
-    const hasLikeReaction = reactions?.some(r => r.reaction_type === ReactionType.LIKE);
-    const hasDislikeReaction = reactions?.some(r => r.reaction_type === ReactionType.DISLIKE);
+    // When typing status changes, update our tracking state
+    useEffect(() => {
+        if (lastTypingStatus && !isTyping) {
+            // Was typing, now stopped - consider animation complete
+            setAnimationComplete(true);
+        }
+        setLastTypingStatus(isTyping);
+    }, [isTyping, lastTypingStatus]);
+
+    // Update content references when props change
+    useEffect(() => {
+        messageContentRef.current = content || "";
+        if (typingContent && typingContent !== typingContentRef.current) {
+            typingContentRef.current = typingContent;
+            // Clear processed content cache when typing content changes
+            processedContentRef.current = null;
+        }
+    }, [content, typingContent]);
+
+    // Check if message has a reaction (case-insensitive)
+    const hasLikeReaction = reactions?.some(r => {
+        const reactionType = typeof r.reaction_type === 'string' ? r.reaction_type.toLowerCase() : '';
+        return reactionType === 'like';
+    });
+
+    const hasDislikeReaction = reactions?.some(r => {
+        const reactionType = typeof r.reaction_type === 'string' ? r.reaction_type.toLowerCase() : '';
+        return reactionType === 'dislike';
+    });
 
     // Get file icon based on type
     const getFileIcon = (fileType: string) => {
-        switch(fileType) {
-            case FileType.IMAGE:
-            case 'IMAGE':
+        const fileTypeLower = typeof fileType === 'string' ? fileType.toLowerCase() : '';
+
+        switch(fileTypeLower) {
+            case 'image':
                 return <FileImage size={14} className="text-blue-500" />;
-            case FileType.TEXT:
-            case 'TEXT':
+            case 'text':
                 return <FileText size={14} className="text-green-500" />;
-            case FileType.PDF:
-            case 'PDF':
+            case 'pdf':
                 return <FileText size={14} className="text-red-500" />;
-            case FileType.WORD:
-            case 'WORD':
+            case 'word':
                 return <FileText size={14} className="text-blue-600" />;
-            case FileType.EXCEL:
-            case 'EXCEL':
+            case 'excel':
                 return <FileText size={14} className="text-green-600" />;
             default:
                 return <File size={14} className="text-gray-500" />;
         }
     };
 
-    // Render message content with source citations
-    const renderMessageContent = () => {
-        // Process content for any source citations [doc:id](text)
-        let processedContent = content || "";
+    // Process document references to replace with links
+    const processDocumentReferences = useCallback((content: string) => {
+        if (!content || !content.includes("[doc:")) return content;
 
-        // If the message doesn't contain document references, return it as-is
-        if (!processedContent.includes("[doc:")) {
-            return (
-                <div className="whitespace-pre-wrap">{processedContent}</div>
-            );
+        // If already processed, return from cache
+        if (processedContentRef.current) {
+            return processedContentRef.current;
         }
 
-        // Extract document references and split content into parts
-        const docRefs = extractDocumentReferences(processedContent);
+        const docRefs = extractDocumentReferences(content);
+        let processedContent = content;
 
-        // Replace each document reference with a component
+        // Replace document references with markdown links
         docRefs.forEach(ref => {
             const pattern = `\\[doc:${ref.id}\\]\\(${ref.text}\\)`;
             const regex = new RegExp(pattern, 'g');
-            processedContent = processedContent.replace(regex, `__DOC_REF_${ref.id}__${ref.text}__DOC_REF_END__`);
+            processedContent = processedContent.replace(
+                regex,
+                `[📄 ${ref.text}](${FileApi.getFileDownloadUrl(ref.id)})`
+            );
         });
 
-        // Split by document reference markers
-        const parts = processedContent.split(/__DOC_REF_|__DOC_REF_END__/);
+        // Cache the processed content
+        processedContentRef.current = processedContent;
+        return processedContent;
+    }, []);
 
-        return (
-            <div className="whitespace-pre-wrap">
-                {parts.map((part, index) => {
-                    if (index % 3 === 1) {
-                        // This is a document ID
-                        return null;
-                    } else if (index % 3 === 2) {
-                        // This is the document link text
-                        const docId = parts[index - 1];
-                        return (
-                            <a
-                                key={`doc-${index}`}
-                                href={FileApi.getFileDownloadUrl(docId)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 underline flex items-center gap-1 hover:text-opacity-80 transition-colors"
-                            >
-                                <FileText size={16} />
-                                {part}
-                            </a>
-                        );
-                    } else {
-                        // This is regular text
-                        return <React.Fragment key={`text-${index}`}>{part}</React.Fragment>;
-                    }
-                })}
-            </div>
-        );
+    // Determine content for rendering
+    const contentToRender = useCallback(() => {
+        // If typing, use typing content if available, otherwise use message content
+        const baseContent = isTyping ? (typingContent || content) : content;
+
+        // If no content, return empty string
+        if (!baseContent) return "";
+
+        return processDocumentReferences(baseContent);
+    }, [isTyping, typingContent, content, processDocumentReferences]);
+
+    // Render message content, handling typing state and markdown
+    const renderMessageContent = () => {
+        // If this message is currently being typed
+        if (isTyping) {
+            return (
+                <TypingAnimation
+                    content={contentToRender()}
+                    isCompleted={!isTyping}
+                    onComplete={() => setAnimationComplete(true)}
+                    speed={80} // Faster typing speed
+                />
+            );
+        }
+
+        return <MarkdownRenderer content={contentToRender()} />;
     };
 
     // Render file attachments if any
@@ -172,17 +203,18 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
 
     const handleReaction = (type: 'like' | 'dislike') => {
         if (onReaction) {
-            // Pass the exact reaction type as expected by the parent component
             onReaction(id, type);
         }
     };
 
-    // Render system message
+    // Render system message with improved styling
     if (isSystem) {
         return (
-            <div className="flex justify-center my-6">
-                <div className="max-w-3xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-6 py-3 text-center">
-                    <div className="text-amber-700 dark:text-amber-400 text-sm">{content}</div>
+            <div className="flex justify-center my-6 px-4">
+                <div className="w-full max-w-3xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-6 py-3 text-center">
+                    <div className="text-amber-700 dark:text-amber-400 text-sm">
+                        <MarkdownRenderer content={content} />
+                    </div>
                 </div>
             </div>
         );
@@ -190,7 +222,7 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
 
     // Render user or assistant message
     return (
-        <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+        <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4 px-4`}>
             <div
                 className={`max-w-[85%] sm:max-w-[80%] rounded-lg p-4 ${
                     isUser
@@ -202,10 +234,16 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
                     <span>{isUser ? "Вы" : "Ассистент"}</span>
                     <span className="text-xs opacity-70">{formatDate(new Date(created_at))}</span>
                 </div>
-                {renderMessageContent()}
+
+                {/* Message content with improved animation handling */}
+                <div className="message-content-wrapper">
+                    {renderMessageContent()}
+                </div>
+
                 {renderFileAttachments()}
 
-                {!isUser && (
+                {/* Only show reactions for AI messages and when typing is complete */}
+                {isAssistant && (!isTyping || animationComplete) && (
                     <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700 flex justify-between items-center">
                         <div className="flex space-x-2">
                             <Button

@@ -37,12 +37,12 @@ export interface SignupResponse {
 
 // File types
 export enum FileType {
-    TEXT = "TEXT",
-    IMAGE = "IMAGE",
-    PDF = "PDF",
-    WORD = "WORD",
-    EXCEL = "EXCEL",
-    OTHER = "OTHER"
+    TEXT = "text",
+    IMAGE = "image",
+    PDF = "pdf",
+    WORD = "word",
+    EXCEL = "excel",
+    OTHER = "other"
 }
 
 export interface FileData {
@@ -82,10 +82,10 @@ export interface FileList {
     total: number;
 }
 
-// Message types - matching both possible casings
+// Message types - case insensitive
 export enum MessageType {
-    USER = "user", // Changed to lowercase to match API
-    AI = "ai",     // Changed to lowercase to match API
+    USER = "user",
+    AI = "ai",
     SYSTEM = "system"
 }
 
@@ -97,26 +97,26 @@ export const MessageTypeUpper = {
 };
 
 export enum MessageStatus {
-    PENDING = "PENDING",
-    PROCESSING = "PROCESSING",
-    COMPLETED = "COMPLETED",
-    FAILED = "FAILED"
+    PENDING = "pending",
+    PROCESSING = "processing",
+    COMPLETED = "completed",
+    FAILED = "failed"
 }
 
 export enum ReactionType {
-    LIKE = "LIKE",
-    DISLIKE = "DISLIKE"
+    LIKE = "like",
+    DISLIKE = "dislike"
 }
 
 export interface Reaction {
     id: string;
     message_id: string;
-    reaction_type: ReactionType;
+    reaction_type: string; // Changed to string to handle both cases
     created_at: string;
 }
 
 export interface ReactionCreate {
-    reaction_type: ReactionType;
+    reaction_type: string; // Changed to string
 }
 
 export interface Source {
@@ -133,7 +133,7 @@ export interface ChatMessage {
     chat_id: string;
     content: string;
     message_type: string; // Changed to string to accept any case
-    status: MessageStatus;
+    status: string | MessageStatus;
     created_at: string;
     updated_at: string;
     sources?: Source[];

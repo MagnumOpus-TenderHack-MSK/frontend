@@ -1,30 +1,24 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { Moon, Sun, Menu, X, LogOut } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Menu, X, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
 import { ChatSidebar } from "./chat-sidebar";
-import { ChatMessage } from "./chat-message";
 import { ChatInput } from "./chat-input";
-import { ChatSuggestions } from "./chat-suggestions";
+import { MessageManager } from "./message-manager";
+import { ThemeToggle } from "../theme-toggle";
 import { useAuth } from "@/contexts/auth-context";
+import { WebSocketProvider, useWebSocket } from "@/contexts/websocket-context";
 import {
     Chat,
-    ChatMessage as ChatMessageType,
-    MessageType,
-    MessageStatus,
-    WebSocketMessage,
-    MessageChunk,
-    MessageComplete,
+    ChatMessage,
     MessageSuggestion,
     ReactionType,
     FileType,
 } from "@/lib/types";
 import { ChatApi } from "@/lib/chat-api";
 import { FileApi } from "@/lib/file-api";
-import { WebSocketService } from "@/lib/websocket-service";
 
 // Default suggestions for new users
 const DEFAULT_SUGGESTIONS: MessageSuggestion[] = [
@@ -35,16 +29,19 @@ const DEFAULT_SUGGESTIONS: MessageSuggestion[] = [
     { id: "default-sug-5", text: "Технические проблемы с входом", icon: "alert-triangle" },
 ];
 
-export default function ChatApp() {
-    const { theme, setTheme } = useTheme();
+// Inner component to use the WebSocket context
+const ChatAppContent = () => {
     const { user, logout } = useAuth();
+    const {
+        connectWebSocket,
+        isTyping,
+        pendingMessageId,
+        streamedContent
+    } = useWebSocket();
+
     const [mounted, setMounted] = useState(false);
     const [activeChat, setActiveChat] = useState<string | null>(null);
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const [isTyping, setIsTyping] = useState(false);
-    const [streamedText, setStreamedText] = useState("");
-    const [displayedText, setDisplayedText] = useState("");
-    const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
     const [chatHistory, setChatHistory] = useState<Chat[]>([]);
     const [isLoadingChats, setIsLoadingChats] = useState(true);
     const [chatSuggestions, setChatSuggestions] = useState<MessageSuggestion[]>(DEFAULT_SUGGESTIONS);
@@ -52,16 +49,9 @@ export default function ChatApp() {
     const [error, setError] = useState<string | null>(null);
     const [fileUploadProgress, setFileUploadProgress] = useState<number | null>(null);
 
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-    const webSocketRef = useRef<WebSocketService | null>(null);
-
     const currentChat = activeChat
         ? chatHistory.find((chat) => chat.id === activeChat)
         : null;
-
-    const toggleTheme = () => {
-        setTheme(theme === "dark" ? "light" : "dark");
-    };
 
     const loadChats = async () => {
         try {
@@ -116,116 +106,10 @@ export default function ChatApp() {
     };
 
     const handleChatSelect = (chatId: string) => {
-        if (webSocketRef.current) {
-            webSocketRef.current.disconnect();
-            webSocketRef.current = null;
-        }
         setActiveChat(chatId);
         setSidebarOpen(false);
-        setIsTyping(false);
-        setStreamedText("");
-        setDisplayedText("");
-        setPendingMessageId(null);
         loadChat(chatId);
         connectWebSocket(chatId);
-    };
-
-    const connectWebSocket = (chatId: string) => {
-        const token = localStorage.getItem("jwt_token");
-        if (!token) {
-            console.error("No token found for WebSocket connection");
-            setError("Authentication error. Please log in again.");
-            return;
-        }
-        console.log(`Setting up WebSocket connection for chat ${chatId}`);
-        if (webSocketRef.current) {
-            console.log("Disconnecting existing WebSocket");
-            webSocketRef.current.disconnect();
-            webSocketRef.current = null;
-        }
-        const ws = new WebSocketService(chatId, token);
-        ws.addMessageListener(handleWebSocketMessage);
-        ws.addConnectionListener(() => {
-            console.log("WebSocket connected successfully");
-        });
-        ws.addErrorListener((error) => {
-            console.error("WebSocket error:", error);
-            if (error.message) {
-                setError(`Connection error: ${error.message}`);
-            }
-        });
-        console.log("Initiating WebSocket connection");
-        ws.connect();
-        webSocketRef.current = ws;
-    };
-
-    const handleWebSocketMessage = (message: WebSocketMessage) => {
-        console.log("Received WebSocket message:", message);
-        if (!message.type) {
-            console.warn("Received message without type:", message);
-            return;
-        }
-        if (message.type === "chunk") {
-            const chunkMessage = message as MessageChunk;
-            handleMessageChunk(chunkMessage);
-        } else if (message.type === "complete") {
-            const completeMessage = message as MessageComplete;
-            handleMessageComplete(completeMessage);
-        } else if (message.type === "error") {
-            console.error("WebSocket error message:", message);
-            setError(message.detail || "Error in chat connection");
-        } else if (message.type === "stream_content") {
-            if (message.content && message.message_id) {
-                handleMessageChunk({
-                    type: "chunk",
-                    message_id: message.message_id,
-                    content: message.content,
-                });
-            }
-        } else {
-            console.log("Unhandled message type:", message.type);
-        }
-    };
-
-    // New handler for message chunks that accumulates text and does not replace it
-    const handleMessageChunk = (message: MessageChunk) => {
-        console.log("Handling message chunk for message ID:", message.message_id);
-        if (!isTyping || pendingMessageId !== message.message_id) {
-            // New message: reset the animation
-            setIsTyping(true);
-            setPendingMessageId(message.message_id);
-            setStreamedText(message.content);
-            setDisplayedText("");
-        } else {
-            // Same message: append the chunk
-            setStreamedText((prev) => prev + message.content);
-        }
-    };
-
-    // Typing animation effect – run continuously while isTyping is true
-    useEffect(() => {
-        if (isTyping) {
-            const intervalId = setInterval(() => {
-                setDisplayedText((prev) => {
-                    if (prev.length < streamedText.length) {
-                        return streamedText.slice(0, prev.length + 1);
-                    }
-                    return prev;
-                });
-            }, 5); // 5ms per character for faster typing
-            return () => clearInterval(intervalId);
-        }
-    }, [isTyping, streamedText]);
-
-    const handleMessageComplete = (message: MessageComplete) => {
-        console.log("Message complete for message ID:", message.message_id);
-        // Ensure that the full accumulated text is shown
-        setDisplayedText(streamedText);
-        setIsTyping(false);
-        setPendingMessageId(null);
-        if (activeChat) {
-            loadChat(activeChat);
-        }
     };
 
     const generateRelevantSuggestions = (message: string) => {
@@ -260,70 +144,41 @@ export default function ChatApp() {
         setInputSuggestions([]);
     };
 
-    const formatFileSize = (bytes: number): string => {
-        if (bytes === 0) return "0 B";
-        const k = 1024;
-        const sizes = ["B", "KB", "MB", "GB"];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
-    };
-
-    const getFileTypeFromFile = (file: File): FileType => {
-        if (file.type.startsWith("image/")) return FileType.IMAGE;
-        if (file.type === "application/pdf") return FileType.PDF;
-        if (
-            file.type.startsWith("text/") ||
-            file.type === "application/json" ||
-            file.name.endsWith(".md") ||
-            file.name.endsWith(".txt")
-        )
-            return FileType.TEXT;
-        if (
-            file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-            file.type === "application/msword"
-        )
-            return FileType.WORD;
-        if (
-            file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-            file.type === "application/vnd.ms-excel" ||
-            file.name.endsWith(".csv")
-        )
-            return FileType.EXCEL;
-        return FileType.OTHER;
-    };
-
     const handleSendMessage = async (message: string, files?: File[]) => {
-        if (!message.trim() && (!files || files.length === 0)) return;
+        if ((!message || !message.trim()) && (!files || files.length === 0)) return;
+
         try {
             setError(null);
             console.log(`Sending message: "${message}" with ${files?.length || 0} files`);
             let fileIds: string[] = [];
             let fileReferences: any[] = [];
+
+            // Handle file uploads
             if (files && files.length > 0) {
                 try {
                     setFileUploadProgress(0);
                     console.log("Uploading files...");
+
                     for (let i = 0; i < files.length; i++) {
                         const file = files[i];
-                        console.log(`Uploading file ${i + 1}/${files.length}: ${file.name} (${formatFileSize(file.size)})`);
                         const onProgress = (progress: number) => {
                             setFileUploadProgress(Math.round((i / files.length) * 100 + progress / files.length));
                         };
+
                         try {
                             const uploadedFile = await FileApi.uploadFile(file, onProgress);
                             fileIds.push(uploadedFile.id);
                             fileReferences.push({
                                 id: uploadedFile.id,
                                 name: uploadedFile.name || file.name,
-                                file_type: uploadedFile.file_type || getFileTypeFromFile(file),
+                                file_type: uploadedFile.file_type || FileType.OTHER,
                                 preview_url: uploadedFile.preview_url,
                             });
-                            console.log(`File ${i + 1} uploaded successfully: ${file.name} (ID: ${uploadedFile.id})`);
                         } catch (fileError) {
                             console.error(`Error uploading file ${file.name}:`, fileError);
                         }
                     }
-                    console.log(`All files uploaded. File IDs: ${fileIds.join(", ")}`);
+
                     setFileUploadProgress(null);
                 } catch (error) {
                     console.error("Error uploading files:", error);
@@ -332,20 +187,34 @@ export default function ChatApp() {
                     return;
                 }
             }
+
+            // Create new chat or use existing chat
             if (!activeChat) {
                 console.log("Creating new chat...");
                 const chatTitle = message.length > 20 ? message.substring(0, 20) + "..." : message;
                 const newChat = await ChatApi.createChat({ title: chatTitle });
                 console.log(`New chat created: ${newChat.id}`);
-                setChatHistory((prev) => [...prev, newChat]);
+
+                // Add to chat history immediately to prevent duplication
+                setChatHistory(prev => {
+                    // Check if chat with this ID already exists
+                    if (prev.some(c => c.id === newChat.id)) {
+                        return prev;
+                    }
+                    return [...prev, newChat];
+                });
+
                 setActiveChat(newChat.id);
                 connectWebSocket(newChat.id);
-                await new Promise((resolve) => setTimeout(resolve, 500));
+
+                // Wait for connection to establish
+                await new Promise(resolve => setTimeout(resolve, 500));
                 await sendMessageToChat(newChat.id, message, fileIds, fileReferences);
             } else {
                 console.log(`Sending to existing chat: ${activeChat}`);
                 await sendMessageToChat(activeChat, message, fileIds, fileReferences);
             }
+
             generateRelevantSuggestions(message);
             setSidebarOpen(false);
             setInputSuggestions([]);
@@ -363,26 +232,45 @@ export default function ChatApp() {
         fileReferences: any[] = []
     ) => {
         try {
-            console.log(`Sending message to chat ${chatId}:`, content);
-            const optimisticMessage: ChatMessageType = {
+            // Add optimistic message to UI
+            const optimisticMessage: ChatMessage = {
                 id: `temp-${Date.now()}`,
                 chat_id: chatId,
                 content,
-                message_type: MessageType.USER,
-                status: MessageStatus.COMPLETED,
+                message_type: "USER",
+                status: "COMPLETED",
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
                 files: fileReferences.length > 0 ? fileReferences : undefined,
             };
+
+            // Helper function to deduplicate messages
+            const deduplicateMessages = (messages: ChatMessage[] = []) => {
+                const uniqueMessages = new Map<string, ChatMessage>();
+                messages.forEach(message => {
+                    // Don't override server messages with temp ones
+                    if (message.id.startsWith('temp-') && uniqueMessages.has(message.id)) {
+                        return;
+                    }
+                    uniqueMessages.set(message.id, message);
+                });
+                return Array.from(uniqueMessages.values());
+            };
+
             setChatHistory((prev) =>
                 prev.map((chat) => {
                     if (chat.id === chatId) {
+                        // Deduplicate messages to prevent doubles
+                        const existingMessages = chat.messages || [];
+                        const updatedMessages = deduplicateMessages([...existingMessages, optimisticMessage]);
+
                         const updatedChat = {
                             ...chat,
-                            messages: [...(chat.messages || []), optimisticMessage],
+                            messages: updatedMessages,
                             updated_at: new Date().toISOString(),
                         };
-                        if (chat.title === "Новый чат" && !chat.messages?.length) {
+
+                        if (chat.title === "Новый чат" && !existingMessages.length) {
                             updatedChat.title =
                                 content.length > 20 ? content.substring(0, 20) + "..." : content;
                         }
@@ -391,20 +279,12 @@ export default function ChatApp() {
                     return chat;
                 })
             );
-            if (webSocketRef.current && !webSocketRef.current.isConnected()) {
-                console.log("WebSocket not connected, reconnecting...");
-                connectWebSocket(chatId);
-                await new Promise((resolve) => setTimeout(resolve, 500));
-            }
-            console.log("Sending message to API with file IDs:", fileIds);
-            const response = await ChatApi.sendMessage(chatId, {
+
+            // Send actual message to API
+            await ChatApi.sendMessage(chatId, {
                 content,
                 file_ids: fileIds.length > 0 ? fileIds : undefined,
             });
-            console.log("Message sent successfully, API response:", response);
-            setIsTyping(true);
-            setStreamedText("");
-            setDisplayedText("");
         } catch (error) {
             console.error(`Error sending message to chat ${chatId}:`, error);
             throw error;
@@ -413,9 +293,29 @@ export default function ChatApp() {
 
     const handleMessageReaction = async (messageId: string, reaction: "like" | "dislike") => {
         if (!activeChat) return;
+
+        // Prevent duplicate reactions
+        const chatIndex = chatHistory.findIndex(chat => chat.id === activeChat);
+        if (chatIndex === -1) return;
+
+        const messageIndex = chatHistory[chatIndex].messages?.findIndex(msg => msg.id === messageId) ?? -1;
+        if (messageIndex === -1) return;
+
+        const message = chatHistory[chatIndex].messages?.[messageIndex];
+        const hasExistingReaction = message?.reactions?.some(
+            r => r.reaction_type.toLowerCase() === reaction.toUpperCase()
+        );
+
+        if (hasExistingReaction) {
+            // If already has this reaction, we'll remove it
+            console.log(`Removing ${reaction} reaction from message ${messageId}`);
+        }
+
         try {
             setError(null);
             const apiReaction = reaction.toUpperCase() as ReactionType;
+
+            // Optimistic update of UI
             setChatHistory((prevHistory) =>
                 prevHistory.map((chat) => {
                     if (chat.id === activeChat) {
@@ -423,9 +323,7 @@ export default function ChatApp() {
                             ...chat,
                             messages: (chat.messages || []).map((msg) => {
                                 if (msg.id === messageId) {
-                                    const hasExistingReaction = msg.reactions?.some(
-                                        (r) => r.reaction_type === apiReaction
-                                    );
+                                    // Clear existing reactions
                                     const newReactions = hasExistingReaction
                                         ? []
                                         : [
@@ -445,12 +343,33 @@ export default function ChatApp() {
                     return chat;
                 })
             );
-            await ChatApi.addReaction(activeChat, messageId, {
-                reaction_type: apiReaction,
-            });
+
+            // Send actual reaction to API with retry
+            let retryCount = 0;
+            const maxRetries = 2;
+            let success = false;
+
+            while (!success && retryCount <= maxRetries) {
+                try {
+                    await ChatApi.addReaction(activeChat, messageId, {
+                        reaction_type: apiReaction,
+                    });
+                    success = true;
+                } catch (error) {
+                    console.error(`Error adding reaction (attempt ${retryCount + 1}):`, error);
+                    retryCount++;
+                    if (retryCount <= maxRetries) {
+                        // Wait before retrying
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    } else {
+                        throw error; // Rethrow if all retries failed
+                    }
+                }
+            }
         } catch (error) {
             console.error(`Error adding reaction to message ${messageId}:`, error);
             setError("Failed to add reaction. Please try again.");
+            // Refresh the chat to ensure UI is in sync with server
             loadChat(activeChat);
         }
     };
@@ -458,32 +377,47 @@ export default function ChatApp() {
     const handleRequestSupport = async () => {
         try {
             setError(null);
-            if (!activeChat) {
-                console.log("Creating new support chat");
+
+            // Get the target chat ID
+            let targetChatId = activeChat;
+
+            if (!targetChatId) {
+                // Create a new chat if none is active
                 const newChat = await ChatApi.createChat({ title: "Запрос поддержки" });
-                setChatHistory((prev) => [...prev, newChat]);
-                setActiveChat(newChat.id);
-                connectWebSocket(newChat.id);
-                await new Promise((resolve) => setTimeout(resolve, 500));
-                await sendMessageToChat(newChat.id, "Я хотел бы подключиться к оператору поддержки.");
-            } else {
-                console.log("Sending support request to existing chat:", activeChat);
-                await sendMessageToChat(activeChat, "Я хотел бы подключиться к оператору поддержки.");
+                setChatHistory(prev => [...prev, newChat]);
+                targetChatId = newChat.id;
+                setActiveChat(targetChatId);
+                connectWebSocket(targetChatId);
+                await new Promise(resolve => setTimeout(resolve, 500)); // Wait for connection
             }
-            setTimeout(() => {
-                setChatHistory((prevHistory) =>
-                    prevHistory.map((chat) => {
-                        if (chat.id === (activeChat || prevHistory[prevHistory.length - 1].id)) {
-                            const systemMessage: ChatMessageType = {
-                                id: `system-${Date.now()}`,
-                                chat_id: chat.id,
-                                content:
-                                    "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
-                                message_type: MessageType.SYSTEM,
-                                status: MessageStatus.COMPLETED,
-                                created_at: new Date().toISOString(),
-                                updated_at: new Date().toISOString(),
-                            };
+
+            // Send the user message first
+            await sendMessageToChat(targetChatId, "Я хотел бы подключиться к оператору поддержки.");
+
+            // Create and send system message
+            try {
+                const systemMessage = await ChatApi.sendSystemMessage(targetChatId, {
+                    content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
+                    message_type: "SYSTEM"
+                });
+
+                console.log('System message created:', systemMessage);
+
+                // Add system message to chat history
+                setChatHistory(prevHistory =>
+                    prevHistory.map(chat => {
+                        if (chat.id === targetChatId) {
+                            // Check if this system message already exists to avoid duplicates
+                            const hasSimilarSystemMessage = (chat.messages || []).some(
+                                msg =>
+                                    (msg.message_type === "SYSTEM" || msg.message_type === "system") &&
+                                    msg.content.includes("Запрос на соединение с оператором")
+                            );
+
+                            if (hasSimilarSystemMessage) {
+                                return chat; // Don't add duplicate system messages
+                            }
+
                             return {
                                 ...chat,
                                 messages: [...(chat.messages || []), systemMessage],
@@ -493,42 +427,69 @@ export default function ChatApp() {
                         return chat;
                     })
                 );
-            }, 1000);
+            } catch (error) {
+                console.error("Error sending system message:", error);
+
+                // Create a client-side only system message as fallback
+                const fallbackSystemMessage = {
+                    id: `system-${Date.now()}`,
+                    chat_id: targetChatId,
+                    content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
+                    message_type: "SYSTEM",
+                    status: "COMPLETED",
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    sources: [],
+                    files: [],
+                    reactions: []
+                };
+
+                // Add fallback system message to chat history
+                setChatHistory(prevHistory =>
+                    prevHistory.map(chat => {
+                        if (chat.id === targetChatId) {
+                            return {
+                                ...chat,
+                                messages: [...(chat.messages || []), fallbackSystemMessage],
+                                updated_at: new Date().toISOString(),
+                            };
+                        }
+                        return chat;
+                    })
+                );
+            }
         } catch (error) {
             console.error("Error requesting support:", error);
             setError("Failed to request support. Please try again.");
         }
     };
 
+
     const handleSuggestionClick = (text: string) => {
         handleSendMessage(text);
     };
 
+    // Load chats when the component mounts
     useEffect(() => {
         if (user) {
             loadChats();
         }
     }, [user]);
 
+    // Load chat and connect to WebSocket when activeChat changes
     useEffect(() => {
         if (activeChat) {
-            loadChat(activeChat);
-            connectWebSocket(activeChat);
+            // Debounce the connection to prevent rapid reconnections
+            const timer = setTimeout(() => {
+                loadChat(activeChat);
+                connectWebSocket(activeChat);
+            }, 300);
+
+            return () => clearTimeout(timer);
         }
     }, [activeChat]);
 
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [currentChat?.messages, streamedText, displayedText]);
-
-    useEffect(() => {
-        return () => {
-            if (webSocketRef.current) {
-                webSocketRef.current.disconnect();
-            }
-        };
-    }, []);
-
+    // Set mounted state
     useEffect(() => {
         setMounted(true);
     }, []);
@@ -576,9 +537,7 @@ export default function ChatApp() {
                     {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
                 </h1>
                 <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="icon" onClick={toggleTheme}>
-                        {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
-                    </Button>
+                    <ThemeToggle />
                     <Button variant="ghost" size="icon" onClick={logout} title="Выйти">
                         <LogOut size={20} />
                     </Button>
@@ -617,64 +576,48 @@ export default function ChatApp() {
                         {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
                     </h1>
                     <div className="flex items-center gap-2">
-                        <Button variant="ghost" size="icon" onClick={toggleTheme}>
-                            {theme === "dark" ? <Sun size={20} /> : <Moon size={20} />}
-                        </Button>
+                        <ThemeToggle />
                         <Button variant="ghost" size="icon" onClick={logout} title="Выйти">
                             <LogOut size={20} />
                         </Button>
                     </div>
                 </div>
 
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                    {isLoadingChats ? (
-                        <div className="flex justify-center items-center h-full">
-                            <div className="animate-pulse text-center">
-                                <div className="h-6 w-32 bg-muted rounded mx-auto"></div>
-                                <div className="mt-2 h-4 w-48 bg-muted rounded mx-auto"></div>
-                            </div>
-                        </div>
-                    ) : !currentChat || !currentChat.messages || currentChat.messages.length === 0 ? (
-                        <ChatSuggestions onSuggestionClick={handleSuggestionClick} />
-                    ) : (
-                        <>
-                            {currentChat.messages.map((message) => (
-                                <ChatMessage key={message.id} message={message} onReaction={handleMessageReaction} />
-                            ))}
-                        </>
-                    )}
-
-                    {/* Streaming text with typing animation */}
-                    {isTyping && pendingMessageId && (
-                        <div className="flex justify-start animate-fade-in mb-4">
-                            <div className="max-w-[85%] sm:max-w-[80%] rounded-lg p-4 chat-bubble-assistant">
-                                <div className="text-sm font-medium mb-2 flex justify-between items-center">
-                                    <span>Ассистент</span>
-                                    <span className="text-xs opacity-70">{new Date().toLocaleTimeString()}</span>
-                                </div>
-                                <div className="whitespace-pre-wrap">
-                                    {displayedText}
-                                    <span className="inline-block w-1 h-4 ml-0.5 bg-current animate-blink"></span>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    <div ref={messagesEndRef} />
+                {/* Messages - Always takes most of the space but ensures input stays at bottom */}
+                <div className="flex-1 flex flex-col min-h-0">
+                    <MessageManager
+                        currentChat={currentChat}
+                        isLoadingChats={isLoadingChats}
+                        isTyping={isTyping}
+                        pendingMessageId={pendingMessageId}
+                        streamedContent={streamedContent}
+                        onMessageReaction={handleMessageReaction}
+                        onSuggestionClick={handleSuggestionClick}
+                    />
                 </div>
 
-                {/* Chat Input */}
-                <ChatInput
-                    onSendMessage={handleSendMessage}
-                    onRequestSupport={handleRequestSupport}
-                    isLoading={isLoadingChats}
-                    isTyping={isTyping}
-                    isUploading={fileUploadProgress !== null}
-                    suggestions={inputSuggestions}
-                    onSuggestionClick={handleSuggestionClick}
-                />
+                {/* Chat Input - Fixed at bottom */}
+                <div className="flex-shrink-0">
+                    <ChatInput
+                        onSendMessage={handleSendMessage}
+                        onRequestSupport={handleRequestSupport}
+                        isLoading={isLoadingChats}
+                        isTyping={isTyping}
+                        isUploading={fileUploadProgress !== null}
+                        suggestions={inputSuggestions}
+                        onSuggestionClick={handleSuggestionClick}
+                    />
+                </div>
             </div>
         </div>
+    );
+};
+
+// Wrap the component with WebSocketProvider
+export default function ChatApp() {
+    return (
+        <WebSocketProvider>
+            <ChatAppContent />
+        </WebSocketProvider>
     );
 }

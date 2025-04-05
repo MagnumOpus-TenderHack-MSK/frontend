@@ -108,15 +108,79 @@ export class ChatApi {
         }
     }
 
+    static async sendSystemMessage(
+        chatId: string,
+        systemMessageData: { content: string; message_type?: string }
+    ): Promise<ChatMessage> {
+        try {
+            // Ensure message_type is set to SYSTEM
+            const data = {
+                content: systemMessageData.content,
+                message_type: systemMessageData.message_type || MessageType.SYSTEM
+            };
+
+            console.log(`Sending system message to chat ${chatId}:`, data);
+
+            // First try the dedicated system message endpoint
+            try {
+                const response = await ApiService.post<ChatMessage>(
+                    `/chats/${chatId}/system-messages`,
+                    data
+                );
+                console.log(`System message sent successfully to chat ${chatId}:`, response);
+                return response;
+            } catch (error) {
+                console.warn(`Dedicated system message endpoint failed, trying fallback for chat ${chatId}:`, error);
+
+                // If dedicated endpoint fails, try the app-specific endpoint (NextJS API route)
+                const response = await fetch(`/api/chats/${chatId}/system-messages`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('jwt_token')}`
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to send system message: ${response.statusText}`);
+                }
+
+                return await response.json();
+            }
+        } catch (error) {
+            console.error(`Error sending system message to chat ${chatId}:`, error);
+
+            // Return a client-side constructed message as last resort
+            return {
+                id: `system-${Date.now()}`,
+                chat_id: chatId,
+                content: systemMessageData.content,
+                message_type: MessageType.SYSTEM,
+                status: "COMPLETED",
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                sources: [],
+                files: [],
+                reactions: []
+            };
+        }
+    }
+
     static async addReaction(
         chatId: string,
         messageId: string,
         reaction: ReactionCreate
     ): Promise<void> {
         try {
+            // Important: Convert the reaction_type to lowercase to match server expectations
+            const lowercaseReaction = {
+                reaction_type: reaction.reaction_type.toLowerCase()
+            };
+
             await ApiService.post<void>(
                 `/chats/${chatId}/messages/${messageId}/reaction`,
-                reaction
+                lowercaseReaction
             );
         } catch (error) {
             console.error(`Error adding reaction to message ${messageId}:`, error);
