@@ -69,7 +69,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
     // Define handleMessageComplete first
     const handleMessageComplete = useCallback((message: MessageComplete) => {
-        const { message_id, sources, suggestions, chat_name } = message;
+        const { message_id, sources, suggestions } = message;
         console.log("Message complete for message ID:", message_id);
 
         // Clear any pending timeouts
@@ -103,13 +103,10 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
         setLastCompletedMessage(completedMessage);
 
-        // Handle chat name update if provided
-        if (chat_name) {
-            setChatNameUpdate(chat_name);
-        }
-
         // Handle suggestions if provided
         if (suggestions && Array.isArray(suggestions) && suggestions.length > 0) {
+            console.log("Received suggestions in completion:", suggestions);
+
             // Transform suggestions into the expected format
             const formattedSuggestions = suggestions.map((text, index) => ({
                 id: `suggestion-${Date.now()}-${index}`,
@@ -190,7 +187,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
         // Handle suggestions if provided in a chunk
         if (suggestions && Array.isArray(suggestions) && suggestions.length > 0) {
-            console.log("Received suggestions:", suggestions);
+            console.log("Received suggestions in chunk:", suggestions);
 
             // Transform suggestions into the expected format
             const formattedSuggestions = suggestions.map((text, index) => ({

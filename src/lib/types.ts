@@ -180,12 +180,16 @@ export interface MessageChunk extends WebSocketMessage {
     type: "chunk";
     message_id: string;
     content: string;
+    suggestions?: string[];
+    chat_name?: string;
 }
 
 export interface MessageComplete extends WebSocketMessage {
     type: "complete";
     message_id: string;
     sources?: Source[];
+    suggestions?: string[];
+    chat_name?: string;
 }
 
 export interface MessageSuggestion {

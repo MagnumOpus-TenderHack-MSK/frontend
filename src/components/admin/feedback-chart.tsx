@@ -25,7 +25,7 @@ export function FeedbackChart({ dateRange }: FeedbackChartProps) {
   const [data, setData] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [granularity, setGranularity] = useState<GranularityType>("day"); // Default to daily view
+  const [granularity, setGranularity] = useState<GranularityType>("hour"); // Default to daily view
 
   // Format date label based on granularity
   const formatDateLabel = (dateLabel: string) => {

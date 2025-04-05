@@ -3,6 +3,7 @@ import { Send, PhoneCall, Paperclip, X, File, FileText, FileImage, HelpCircle, S
 import { Button } from "@/components/ui/button";
 import { MessageSuggestion } from "@/lib/types";
 import { processFilesBeforeUpload, formatFileSize } from "@/lib/file-utils";
+import {SuggestionButton} from "@/components/chat/suggestion-button";
 
 // Get icon for suggestion based on its icon property
 const getIconForSuggestion = (suggestion: MessageSuggestion) => {
@@ -230,17 +231,13 @@ export function ChatInput({
             {suggestionsToShow.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2 justify-center">
                     {suggestionsToShow.slice(0, 3).map((suggestion) => (
-                        <button
+                        <SuggestionButton
                             key={suggestion.id}
-                            onClick={() => onSuggestionClick && onSuggestionClick(suggestion.text)}
-                            className={`bg-${aiSuggestions.length > 0 ? 'blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800' : 'white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'} shadow-sm
-                             hover:bg-${aiSuggestions.length > 0 ? 'blue-100 dark:hover:bg-blue-800/30' : 'gray-50 dark:hover:bg-gray-700'} transition-colors py-2 px-3 rounded-2xl
-                             text-sm flex items-center gap-1.5 max-w-xs`}
+                            suggestion={suggestion}
+                            onClick={onSuggestionClick}
+                            isAiSuggestion={aiSuggestions.length > 0}
                             disabled={isLoading || isUploading || isProcessingFiles}
-                        >
-                            {getIconForSuggestion(suggestion)}
-                            <span className="truncate">{suggestion.text}</span>
-                        </button>
+                        />
                     ))}
                 </div>
             )}
