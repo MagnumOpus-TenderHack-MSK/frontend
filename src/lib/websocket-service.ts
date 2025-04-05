@@ -101,7 +101,7 @@ export class WebSocketService {
 
     public sendMessage(data: any): void {
         if (this.socket && this.socket.readyState === WebSocketState.OPEN) {
-            const jsonData = JSON.stringify(data);
+            const jsonData = typeof data === 'string' ? data : JSON.stringify(data);
             console.log('Sending WebSocket message:', jsonData);
             this.socket.send(jsonData);
         } else {
@@ -197,7 +197,6 @@ export class WebSocketService {
     }
 
     private handleMessage(event: MessageEvent): void {
-        // Clear pong timeout if this is a pong response
         try {
             console.log('WebSocket message received:', event.data);
 
@@ -208,6 +207,8 @@ export class WebSocketService {
                     data = JSON.parse(event.data);
                 } catch (e) {
                     console.log('Received non-JSON message:', event.data);
+                    // Still try to notify listeners with raw data
+                    this.messageListeners.forEach(listener => listener(event.data));
                     return;
                 }
             } else {
@@ -215,6 +216,7 @@ export class WebSocketService {
                 return;
             }
 
+            // Clear pong timeout if this is a pong response
             if (data.type === 'pong') {
                 if (this.pongTimeout) {
                     clearTimeout(this.pongTimeout);

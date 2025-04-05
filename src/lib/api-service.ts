@@ -18,15 +18,8 @@ apiClient.interceptors.request.use(
         const token = localStorage.getItem('jwt_token');
         if (token) {
             // Ensure headers object exists
-            if (!config.headers) {
-                config.headers = {};
-            }
+            config.headers = config.headers || {};
             config.headers.Authorization = `Bearer ${token}`;
-
-            // Log auth header for debugging (remove in production)
-            console.log('Request with Authorization:', `Bearer ${token.substring(0, 10)}...`);
-        } else {
-            console.warn('No auth token found for request');
         }
         return config;
     },
@@ -49,10 +42,14 @@ apiClient.interceptors.response.use(
             }
         }
 
-        // Handle validation errors
-        if (error.response?.status === 422) {
-            console.error('Validation error:', error.response.data);
-        }
+        // Log the full error details for debugging
+        console.error('API Error:', {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            message: error.message,
+            url: error.config?.url
+        });
 
         return Promise.reject(error);
     }
@@ -60,6 +57,11 @@ apiClient.interceptors.response.use(
 
 // API service class
 export class ApiService {
+    // Get base URL for direct use
+    static getBaseUrl(): string {
+        return API_BASE_URL;
+    }
+
     // Generic request method
     static async request<T>(config: AxiosRequestConfig): Promise<T> {
         try {
@@ -91,7 +93,7 @@ export class ApiService {
         return this.request<T>({ method: 'DELETE', url });
     }
 
-    // Custom method for file uploads
+    // Custom method for file uploads using axios
     static async uploadFile<T>(url: string, file: File, onProgress?: (percentage: number) => void): Promise<T> {
         const formData = new FormData();
         formData.append('file', file);

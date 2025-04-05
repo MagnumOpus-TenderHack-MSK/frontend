@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { ThumbsUp, ThumbsDown, Copy, FileText, FileImage, File, Download, ExternalLink } from "lucide-react";
 import { extractDocumentReferences } from "@/lib/utils";
 import { formatDate } from "@/lib/utils";
-import { ChatMessage as ChatMessageType, MessageType, ReactionType, FileType, FileReference } from "@/lib/types";
+import { ChatMessage as ChatMessageType, MessageType, MessageTypeUpper, ReactionType, FileType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { FileApi } from "@/lib/file-api";
 
@@ -15,8 +15,16 @@ interface MessageProps {
 
 export function ChatMessage({ message, onReaction }: MessageProps) {
     const { id, content, message_type, created_at, reactions, files } = message;
-    const isUser = message_type === MessageType.USER;
-    const isSystem = message_type === MessageType.SYSTEM;
+
+    // Make case-insensitive comparisons
+    const messageTypeLower = typeof message_type === 'string' ? message_type.toLowerCase() : '';
+
+    const isUser = messageTypeLower === MessageType.USER || messageTypeLower === "user" || message_type === MessageTypeUpper.USER;
+    const isSystem = messageTypeLower === MessageType.SYSTEM || messageTypeLower === "system" || message_type === MessageTypeUpper.SYSTEM;
+
+    // Debug logging to help diagnose issues
+    console.log(`Message ${id} type: ${message_type}, normalized: ${messageTypeLower}, isUser: ${isUser}, isSystem: ${isSystem}`);
+
     const [copied, setCopied] = useState(false);
 
     // Check if message has a reaction
@@ -25,18 +33,24 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
 
     // Get file icon based on type
     const getFileIcon = (fileType: string) => {
-        if (fileType === FileType.IMAGE || fileType === 'IMAGE') {
-            return <FileImage size={14} className="text-blue-500" />;
-        } else if (fileType === FileType.TEXT || fileType === 'TEXT') {
-            return <FileText size={14} className="text-green-500" />;
-        } else if (fileType === FileType.PDF || fileType === 'PDF') {
-            return <FileText size={14} className="text-red-500" />;
-        } else if (fileType === FileType.WORD || fileType === 'WORD') {
-            return <FileText size={14} className="text-blue-600" />;
-        } else if (fileType === FileType.EXCEL || fileType === 'EXCEL') {
-            return <FileText size={14} className="text-green-600" />;
-        } else {
-            return <File size={14} className="text-gray-500" />;
+        switch(fileType) {
+            case FileType.IMAGE:
+            case 'IMAGE':
+                return <FileImage size={14} className="text-blue-500" />;
+            case FileType.TEXT:
+            case 'TEXT':
+                return <FileText size={14} className="text-green-500" />;
+            case FileType.PDF:
+            case 'PDF':
+                return <FileText size={14} className="text-red-500" />;
+            case FileType.WORD:
+            case 'WORD':
+                return <FileText size={14} className="text-blue-600" />;
+            case FileType.EXCEL:
+            case 'EXCEL':
+                return <FileText size={14} className="text-green-600" />;
+            default:
+                return <File size={14} className="text-gray-500" />;
         }
     };
 
@@ -77,11 +91,9 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
                         return (
                             <a
                                 key={`doc-${index}`}
-                                href="#"
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    window.open(FileApi.getFileDownloadUrl(docId), '_blank');
-                                }}
+                                href={FileApi.getFileDownloadUrl(docId)}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="text-blue-600 underline flex items-center gap-1 hover:text-opacity-80 transition-colors"
                             >
                                 <FileText size={16} />
@@ -106,39 +118,47 @@ export function ChatMessage({ message, onReaction }: MessageProps) {
         return (
             <div className="mt-3 pt-2 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex flex-wrap gap-2">
-                    {files.map((file) => (
-                        <div
-                            key={file.id}
-                            className="bg-muted/50 rounded-md px-3 py-2 flex items-center gap-2 text-sm"
-                        >
-                            <div className="flex items-center gap-1.5">
-                                {getFileIcon(file.file_type)}
-                                <span className="text-sm">{file.name}</span>
-                            </div>
-                            <a
-                                href={FileApi.getFileDownloadUrl(file.id)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs bg-blue-100 dark:bg-blue-900 px-2 py-0.5 rounded flex items-center gap-1"
-                                title="Скачать файл"
+                    {files.map((file) => {
+                        // Double-check that the file has the required properties
+                        if (!file || !file.id) {
+                            console.warn('Invalid file reference:', file);
+                            return null;
+                        }
+
+                        return (
+                            <div
+                                key={file.id}
+                                className="bg-muted/50 rounded-md px-3 py-2 flex items-center gap-2 text-sm"
                             >
-                                <Download size={12} />
-                                Скачать
-                            </a>
-                            {file.preview_url && (
+                                <div className="flex items-center gap-1.5">
+                                    {getFileIcon(file.file_type)}
+                                    <span className="text-sm">{file.name || "File"}</span>
+                                </div>
                                 <a
-                                    href={file.preview_url}
+                                    href={FileApi.getFileDownloadUrl(file.id)}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="text-xs bg-green-100 dark:bg-green-900 px-2 py-0.5 rounded flex items-center gap-1"
-                                    title="Просмотреть"
+                                    className="text-xs bg-blue-100 dark:bg-blue-900 px-2 py-0.5 rounded flex items-center gap-1"
+                                    title="Скачать файл"
                                 >
-                                    <ExternalLink size={12} />
-                                    Просмотр
+                                    <Download size={12} />
+                                    Скачать
                                 </a>
-                            )}
-                        </div>
-                    ))}
+                                {file.preview_url && (
+                                    <a
+                                        href={FileApi.getFilePreviewUrl(file.id)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs bg-green-100 dark:bg-green-900 px-2 py-0.5 rounded flex items-center gap-1"
+                                        title="Просмотреть"
+                                    >
+                                        <ExternalLink size={12} />
+                                        Просмотр
+                                    </a>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             </div>
         );

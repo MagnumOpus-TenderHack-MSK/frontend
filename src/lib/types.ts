@@ -82,12 +82,19 @@ export interface FileList {
     total: number;
 }
 
-// Message types
+// Message types - matching both possible casings
 export enum MessageType {
-    USER = "USER",
-    AI = "AI",
-    SYSTEM = "SYSTEM"
+    USER = "user", // Changed to lowercase to match API
+    AI = "ai",     // Changed to lowercase to match API
+    SYSTEM = "system"
 }
+
+// Define uppercase versions of the message types for comparison
+export const MessageTypeUpper = {
+    USER: "USER",
+    AI: "AI",
+    SYSTEM: "SYSTEM"
+};
 
 export enum MessageStatus {
     PENDING = "PENDING",
@@ -125,7 +132,7 @@ export interface ChatMessage {
     id: string;
     chat_id: string;
     content: string;
-    message_type: MessageType;
+    message_type: string; // Changed to string to accept any case
     status: MessageStatus;
     created_at: string;
     updated_at: string;

@@ -1,6 +1,8 @@
 import { ApiService } from './api-service';
 import { FileUploadResponse, FileList, FileData, FileType } from './types';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+
 export class FileApi {
     static async getFiles(skip: number = 0, limit: number = 20): Promise<FileList> {
         try {
@@ -26,17 +28,59 @@ export class FileApi {
     ): Promise<FileUploadResponse> {
         try {
             console.log(`Uploading file: ${file.name} (${file.size} bytes)`);
-            const fileType = determineFileType(file);
-            console.log(`Determined file type: ${fileType}`);
 
-            const response = await ApiService.uploadFile<FileUploadResponse>(
-                '/files/upload',
-                file,
-                onProgress
-            );
+            // Use FormData for file uploads
+            const formData = new FormData();
+            formData.append('file', file);
 
-            console.log('File upload successful:', response);
-            return response;
+            // Get token for authorization
+            const token = localStorage.getItem('jwt_token');
+            const headers: HeadersInit = {};
+            if (token) {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+
+            // Create the request manually to monitor progress
+            const xhr = new XMLHttpRequest();
+
+            return new Promise((resolve, reject) => {
+                xhr.open('POST', `${API_BASE_URL}/files/upload`);
+
+                // Set headers
+                if (token) {
+                    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+                }
+
+                // Track upload progress
+                xhr.upload.onprogress = (event) => {
+                    if (onProgress && event.total) {
+                        const percentage = Math.round((event.loaded * 100) / event.total);
+                        onProgress(percentage);
+                    }
+                };
+
+                // Handle response
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            console.log('File upload successful:', response);
+                            resolve(response);
+                        } catch (error) {
+                            reject(new Error('Invalid response format'));
+                        }
+                    } else {
+                        reject(new Error(`Upload failed with status ${xhr.status}: ${xhr.statusText}`));
+                    }
+                };
+
+                xhr.onerror = () => {
+                    reject(new Error('Network error during upload'));
+                };
+
+                // Send the form data
+                xhr.send(formData);
+            });
         } catch (error) {
             console.error('Error uploading file:', error);
             throw error;
@@ -50,14 +94,27 @@ export class FileApi {
         try {
             console.log(`Uploading ${files.length} files`);
 
-            const response = await ApiService.uploadMultipleFiles<FileUploadResponse[]>(
-                '/files/upload-multiple',
-                files,
-                onProgress
-            );
+            // Upload files individually for better error handling
+            const results: FileUploadResponse[] = [];
 
-            console.log('Multiple files upload successful:', response);
-            return response;
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                try {
+                    const response = await this.uploadFile(file, (progress) => {
+                        if (onProgress) {
+                            // Normalize progress across all files
+                            const overallProgress = Math.round((i * 100 + progress) / files.length);
+                            onProgress(overallProgress);
+                        }
+                    });
+                    results.push(response);
+                } catch (error) {
+                    console.error(`Error uploading file ${file.name}:`, error);
+                    // Continue with other files
+                }
+            }
+
+            return results;
         } catch (error) {
             console.error('Error uploading multiple files:', error);
             throw error;
@@ -65,13 +122,11 @@ export class FileApi {
     }
 
     static getFileDownloadUrl(fileId: string): string {
-        const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
-        return `${baseURL}/files/${fileId}/download`;
+        return `${API_BASE_URL}/files/${fileId}/download`;
     }
 
     static getFilePreviewUrl(fileId: string): string {
-        const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
-        return `${baseURL}/files/${fileId}/preview`;
+        return `${API_BASE_URL}/files/${fileId}/preview`;
     }
 
     static getFileTypeAsString(fileType: FileType): string {

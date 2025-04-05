@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Send, PhoneCall, Paperclip, X, File, FileText, FileImage, HelpCircle, Search, AlertTriangle, UserPlus, MessageSquare, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MessageSuggestion } from "@/lib/types";
+import { processFilesBeforeUpload, formatFileSize } from "@/lib/file-utils";
 
 // Get icon for suggestion based on its icon property
 const getIconForSuggestion = (suggestion: MessageSuggestion) => {
@@ -27,6 +28,7 @@ interface FilePreview {
     file: File;
     previewUrl?: string;
     previewText?: string;
+    originalSize?: number; // Added to track original size
 }
 
 interface ChatInputProps {
@@ -51,12 +53,13 @@ export function ChatInput({
     const [input, setInput] = useState("");
     const [files, setFiles] = useState<FilePreview[]>([]);
     const [dragActive, setDragActive] = useState(false);
+    const [isProcessingFiles, setIsProcessingFiles] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (isUploading) return;
+        if (isUploading || isProcessingFiles) return;
         if (!input.trim() && files.length === 0) return;
 
         onSendMessage(input, files.length > 0 ? files.map(f => f.file) : undefined);
@@ -82,12 +85,12 @@ export function ChatInput({
         if (!dragActive) setDragActive(true);
     };
 
-    const handleDrop = (e: React.DragEvent) => {
+    const handleDrop = async (e: React.DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
 
-        if (isUploading || isTyping || isLoading) return;
+        if (isUploading || isLoading || isProcessingFiles) return;
 
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
             handleFiles(Array.from(e.dataTransfer.files));
@@ -106,19 +109,34 @@ export function ChatInput({
     };
 
     const handleFiles = async (newFiles: File[]) => {
-        // Process each file to create previews
-        const filePromises = newFiles.map(file => processFile(file));
+        setIsProcessingFiles(true);
 
         try {
+            // Process files to reduce size
+            const optimizedFiles = await processFilesBeforeUpload(newFiles);
+
+            // Process each file to create previews
+            const filePromises = optimizedFiles.map((file, index) => {
+                // Track original size if it's different
+                const originalSize = newFiles[index].size !== file.size ? newFiles[index].size : undefined;
+                return processFile(file, originalSize);
+            });
+
             const newFilePreviews = await Promise.all(filePromises);
             setFiles(prev => [...prev, ...newFilePreviews]);
+
         } catch (error) {
             console.error('Error processing files:', error);
+        } finally {
+            setIsProcessingFiles(false);
         }
     };
 
-    const processFile = async (file: File): Promise<FilePreview> => {
-        const preview: FilePreview = { file };
+    const processFile = async (file: File, originalSize?: number): Promise<FilePreview> => {
+        const preview: FilePreview = {
+            file,
+            originalSize
+        };
 
         // Generate preview for image files
         if (file.type.startsWith('image/')) {
@@ -169,13 +187,6 @@ export function ChatInput({
         fileInputRef.current?.click();
     };
 
-    // Format file size for display
-    const formatFileSize = (bytes: number): string => {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    };
-
     // Get file icon based on type
     const getFileIcon = (file: File) => {
         if (file.type.startsWith('image/')) {
@@ -200,6 +211,8 @@ export function ChatInput({
         };
     }, []);
 
+    // Don't disable inputs while typing - removed isTyping from disabled states
+
     return (
         <div
             className={`border-t border-gray-200 dark:border-gray-700 p-4 ${dragActive ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}
@@ -218,7 +231,7 @@ export function ChatInput({
                             className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm
                          hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors py-2 px-3 rounded-2xl
                          text-sm flex items-center gap-1.5 max-w-xs"
-                            disabled={isLoading || isTyping || isUploading}
+                            disabled={isLoading || isUploading || isProcessingFiles}
                         >
                             {getIconForSuggestion(suggestion)}
                             <span className="truncate">{suggestion.text}</span>
@@ -260,7 +273,14 @@ export function ChatInput({
                             <div className="flex items-center justify-between">
                                 <div className="overflow-hidden">
                                     <div className="truncate text-xs font-medium">{filePreview.file.name}</div>
-                                    <div className="text-xs text-muted-foreground">{formatFileSize(filePreview.file.size)}</div>
+                                    <div className="text-xs text-muted-foreground">
+                                        {formatFileSize(filePreview.file.size)}
+                                        {filePreview.originalSize && (
+                                            <span className="text-green-500 ml-1">
+                                                ({Math.round((1 - (filePreview.file.size / filePreview.originalSize)) * 100)}% smaller)
+                                            </span>
+                                        )}
+                                    </div>
                                 </div>
 
                                 {/* Delete button */}
@@ -268,7 +288,7 @@ export function ChatInput({
                                     onClick={() => handleRemoveFile(index)}
                                     className="p-1 bg-muted/50 hover:bg-muted-foreground/20 rounded-full"
                                     title="Удалить файл"
-                                    disabled={isUploading}
+                                    disabled={isUploading || isProcessingFiles}
                                 >
                                     <X size={12} className="text-muted-foreground" />
                                 </button>
@@ -291,12 +311,14 @@ export function ChatInput({
                                     ? "Ассистент печатает..."
                                     : isUploading
                                         ? "Загрузка файлов..."
-                                        : "Введите ваше сообщение..."
+                                        : isProcessingFiles
+                                            ? "Обработка файлов..."
+                                            : "Введите ваше сообщение..."
                         }
                         className={`w-full rounded-md border border-input bg-background px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-primary ${
                             dragActive ? 'border-blue-400 dark:border-blue-500' : ''
                         }`}
-                        disabled={isLoading || isTyping || isUploading}
+                        disabled={isLoading || isUploading || isProcessingFiles}
                     />
                 </div>
 
@@ -307,7 +329,7 @@ export function ChatInput({
                     onChange={handleFileChange}
                     className="hidden"
                     multiple
-                    disabled={isLoading || isTyping || isUploading}
+                    disabled={isLoading || isUploading || isProcessingFiles}
                 />
 
                 {/* File attachment button */}
@@ -315,11 +337,11 @@ export function ChatInput({
                     type="button"
                     variant="outline"
                     onClick={triggerFileInput}
-                    disabled={isLoading || isTyping || isUploading}
+                    disabled={isLoading || isUploading || isProcessingFiles}
                     className="transition-all duration-200 hover:scale-105"
                     title="Прикрепить файл"
                 >
-                    {isUploading ? (
+                    {isUploading || isProcessingFiles ? (
                         <Loader2 size={18} className="animate-spin" />
                     ) : (
                         <Paperclip size={18} />
@@ -328,7 +350,7 @@ export function ChatInput({
 
                 <Button
                     type="submit"
-                    disabled={isLoading || isTyping || isUploading || (!input.trim() && files.length === 0)}
+                    disabled={isLoading || isUploading || isProcessingFiles || (!input.trim() && files.length === 0)}
                     className="transition-all duration-200 hover:scale-105"
                 >
                     <Send size={18} />
@@ -338,7 +360,7 @@ export function ChatInput({
                     type="button"
                     variant="support"
                     onClick={onRequestSupport}
-                    disabled={isLoading || isTyping || isUploading}
+                    disabled={isLoading || isUploading || isProcessingFiles}
                     className="transition-all duration-200 hover:scale-105"
                     title="Связаться с оператором"
                 >
@@ -350,6 +372,13 @@ export function ChatInput({
                 <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2">
                     <Loader2 size={14} className="animate-spin" />
                     Загрузка файлов...
+                </div>
+            )}
+
+            {isProcessingFiles && (
+                <div className="mt-2 text-sm text-muted-foreground flex items-center gap-2">
+                    <Loader2 size={14} className="animate-spin" />
+                    Оптимизация файлов...
                 </div>
             )}
         </div>
