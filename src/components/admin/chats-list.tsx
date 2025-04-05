@@ -1,11 +1,11 @@
-"use client"
-
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
-import { ThumbsUp, ThumbsDown } from "lucide-react"
-import { formatDate } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { ThumbsUp, ThumbsDown, RefreshCw } from "lucide-react"
+import { adminApi } from "@/lib/admin-api"
+import { format } from "date-fns"
 
 interface ChatsListProps {
   dateRange: { from: Date; to: Date }
@@ -13,53 +13,65 @@ interface ChatsListProps {
   subCluster: string
 }
 
-interface ChatItem {
-  id: string
-  title: string
-  user: string
-  created_at: string
-  updated_at: string
-  message_count: number
-  likes: number
-  dislikes: number
-}
-
 export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
-  const [chats, setChats] = useState<ChatItem[]>([])
+  const [chats, setChats] = useState<any[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [total, setTotal] = useState(0)
   const router = useRouter()
 
-  useEffect(() => {
-    const fetchChats = async () => {
-      setIsLoading(true)
-      try {
-        // In a real implementation, this would fetch from your API
-        // For now, we'll use mock data
-        setTimeout(() => {
-          const mockChats: ChatItem[] = Array.from({ length: 10 }, (_, i) => ({
-            id: `chat-${i + 1}`,
-            title: `Вопрос по ${subCluster.toLowerCase()} #${i + 1}`,
-            user: `user${i + 1}@example.com`,
-            created_at: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000).toISOString(),
-            updated_at: new Date(Date.now() - Math.random() * 2 * 24 * 60 * 60 * 1000).toISOString(),
-            message_count: Math.floor(Math.random() * 20) + 3,
-            likes: Math.floor(Math.random() * 3),
-            dislikes: Math.floor(Math.random() * 2),
-          }))
-          setChats(mockChats)
-          setIsLoading(false)
-        }, 1000)
-      } catch (error) {
-        console.error("Error fetching chats:", error)
-        setIsLoading(false)
-      }
-    }
+  const fetchChats = async () => {
+    setIsLoading(true)
+    setError(null)
 
+    try {
+      // Format dates for API
+      const fromDate = format(dateRange.from, "yyyy-MM-dd")
+      const toDate = format(dateRange.to, "yyyy-MM-dd")
+
+      // Fetch chats filtered by cluster and subcluster
+      const response = await adminApi.getChats(
+          0, // skip
+          50, // limit
+          cluster,
+          subCluster,
+          fromDate,
+          toDate
+      )
+
+      if (Array.isArray(response)) {
+        // Handle case where API returns array directly
+        setChats(response)
+        setTotal(response.length)
+      } else {
+        // Handle paginated response
+        setChats(response.items)
+        setTotal(response.total)
+      }
+    } catch (error) {
+      console.error("Error fetching chats:", error)
+      setError("Failed to load chat data")
+      setChats([])
+      setTotal(0)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
     fetchChats()
   }, [dateRange, cluster, subCluster])
 
   const handleViewChat = (chatId: string) => {
     router.push(`/admin/chats/${chatId}`)
+  }
+
+  const formatDate = (dateString: string) => {
+    try {
+      return format(new Date(dateString), "dd.MM.yyyy HH:mm")
+    } catch (e) {
+      return dateString
+    }
   }
 
   if (isLoading) {
@@ -72,44 +84,66 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
     )
   }
 
+  if (error) {
+    return (
+        <div className="text-center py-8">
+          <p className="text-red-500 mb-4">{error}</p>
+          <Button variant="outline" onClick={fetchChats}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Попробовать снова
+          </Button>
+        </div>
+    )
+  }
+
+  if (chats.length === 0) {
+    return (
+        <div className="text-center py-8">
+          <p className="text-muted-foreground">Нет чатов для данной категории в выбранный период</p>
+        </div>
+    )
+  }
+
   return (
       <div className="overflow-x-auto">
-        <div className="text-sm text-muted-foreground mb-2">Нажмите на чат для просмотра диалога</div>
+        <div className="text-sm text-muted-foreground mb-2">
+          {total > 0 ? `Найдено ${total} чатов. Нажмите на чат для просмотра диалога` : 'Нет чатов для отображения'}
+        </div>
 
         {/* Desktop Table */}
-        <div className="hidden md:block rounded-md border">
+        <div className="hidden md:block rounded-md border dark:border-gray-700">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Заголовок</TableHead>
-                <TableHead>Пользователь</TableHead>
-                <TableHead>Создан</TableHead>
-                <TableHead>Обновлен</TableHead>
-                <TableHead>Сообщений</TableHead>
-                <TableHead>Оценка</TableHead>
+              <TableRow className="hover:bg-muted/50 dark:hover:bg-muted/50">
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Заголовок</TableHead>
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Пользователь</TableHead>
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Создан</TableHead>
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Обновлен</TableHead>
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Сообщений</TableHead>
+                <TableHead className="text-muted-foreground dark:text-muted-foreground">Оценка</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {chats.map((chat) => (
                   <TableRow
                       key={chat.id}
-                      className="cursor-pointer hover:bg-muted/80"
+                      className="cursor-pointer hover:bg-muted/50 dark:hover:bg-muted/50"
                       onClick={() => handleViewChat(chat.id)}
                   >
                     <TableCell className="font-medium">{chat.title}</TableCell>
                     <TableCell>{chat.user}</TableCell>
-                    <TableCell>{formatDate(new Date(chat.created_at))}</TableCell>
-                    <TableCell>{formatDate(new Date(chat.updated_at))}</TableCell>
+                    <TableCell>{formatDate(chat.created_at)}</TableCell>
+                    <TableCell>{formatDate(chat.updated_at)}</TableCell>
                     <TableCell>{chat.message_count}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1">
-                      <ThumbsUp size={14} className="text-green-500" />
-                      {chat.likes}
+                      <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
+                      {chat.likes || 0}
                     </span>
                         <span className="flex items-center gap-1">
-                      <ThumbsDown size={14} className="text-red-500" />
-                          {chat.dislikes}
+                      <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
+                          {chat.dislikes || 0}
                     </span>
                       </div>
                     </TableCell>
@@ -124,7 +158,7 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
           {chats.map((chat) => (
               <div
                   key={chat.id}
-                  className="border rounded-lg p-4 cursor-pointer hover:bg-muted/80"
+                  className="border dark:border-gray-700 rounded-lg p-4 cursor-pointer hover:bg-muted/50 dark:hover:bg-muted/50"
                   onClick={() => handleViewChat(chat.id)}
               >
                 <div className="font-medium mb-2">{chat.title}</div>
@@ -133,10 +167,10 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
                   <div>{chat.user}</div>
 
                   <div className="text-muted-foreground">Создан:</div>
-                  <div>{formatDate(new Date(chat.created_at))}</div>
+                  <div>{formatDate(chat.created_at)}</div>
 
                   <div className="text-muted-foreground">Обновлен:</div>
-                  <div>{formatDate(new Date(chat.updated_at))}</div>
+                  <div>{formatDate(chat.updated_at)}</div>
 
                   <div className="text-muted-foreground">Сообщений:</div>
                   <div>{chat.message_count}</div>
@@ -144,12 +178,12 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
                   <div className="text-muted-foreground">Оценка:</div>
                   <div className="flex items-center gap-3">
                 <span className="flex items-center gap-1">
-                  <ThumbsUp size={14} className="text-green-500" />
-                  {chat.likes}
+                  <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
+                  {chat.likes || 0}
                 </span>
                     <span className="flex items-center gap-1">
-                  <ThumbsDown size={14} className="text-red-500" />
-                      {chat.dislikes}
+                  <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
+                      {chat.dislikes || 0}
                 </span>
                   </div>
                 </div>
@@ -159,4 +193,3 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
       </div>
   )
 }
-

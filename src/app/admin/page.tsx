@@ -9,27 +9,18 @@ import { DateRangePicker } from "@/components/admin/date-range-picker"
 import { ClusterRequestsChart } from "@/components/admin/cluster-requests-chart"
 import { FeedbackChart } from "@/components/admin/feedback-chart"
 import { ChatsList } from "@/components/admin/chats-list"
-import { useAuth } from "@/contexts/auth-context"
 import { AdminHeader } from "@/components/admin/admin-header"
 import { AdminStats } from "@/components/admin/admin-stats"
 import { ArrowLeft, ChevronRight } from "lucide-react"
 
 export default function AdminDashboard() {
-  const { user, isLoading } = useAuth()
   const router = useRouter()
   const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
-    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
     to: new Date(),
   })
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null)
   const [selectedSubCluster, setSelectedSubCluster] = useState<string | null>(null)
-
-  // No admin check for demo purposes
-  // useEffect(() => {
-  //   if (!isLoading && (!user || !user.is_admin)) {
-  //     router.push("/")
-  //   }
-  // }, [user, isLoading, router])
 
   const handleClusterClick = (cluster: string) => {
     setSelectedCluster(cluster)
@@ -49,23 +40,7 @@ export default function AdminDashboard() {
     setSelectedSubCluster(null)
   }
 
-  if (isLoading) {
-    return (
-        <div className="flex h-screen items-center justify-center">
-          <div className="animate-pulse text-center">
-            <div className="h-8 w-32 bg-muted rounded mx-auto"></div>
-            <div className="mt-4 h-4 w-48 bg-muted rounded mx-auto"></div>
-          </div>
-        </div>
-    )
-  }
-
-  // No admin check for demo purposes
-  // if (!user?.is_admin) {
-  //   return null // Will redirect in useEffect
-  // }
-
-  // Create breadcrumb path
+  // Render breadcrumb navigation
   const renderBreadcrumb = () => {
     if (!selectedCluster) return null
 
@@ -135,13 +110,13 @@ export default function AdminDashboard() {
                 <AdminStats dateRange={dateRange} />
 
                 <Tabs defaultValue="clusters" className="space-y-4">
-                  <TabsList>
+                  <TabsList className="bg-muted text-muted-foreground dark:bg-muted dark:text-muted-foreground">
                     <TabsTrigger value="clusters">Запросы по кластерам</TabsTrigger>
                     <TabsTrigger value="feedback">Обратная связь</TabsTrigger>
                   </TabsList>
 
                   <TabsContent value="clusters" className="space-y-4">
-                    <Card>
+                    <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                       <CardHeader>
                         <CardTitle>Распределение запросов по категориям</CardTitle>
                         <CardDescription>Нажмите на категорию для просмотра подкатегорий</CardDescription>
@@ -153,7 +128,7 @@ export default function AdminDashboard() {
                   </TabsContent>
 
                   <TabsContent value="feedback" className="space-y-4">
-                    <Card>
+                    <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                       <CardHeader>
                         <CardTitle>Обратная связь пользователей</CardTitle>
                         <CardDescription>Динамика оценок пользователей за выбранный период</CardDescription>
@@ -168,9 +143,9 @@ export default function AdminDashboard() {
           )}
 
           {selectedCluster && !selectedSubCluster && (
-              <Card>
+              <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                 <CardHeader>
-                  <CardTitle>Подкатегории в {selectedCluster}</CardTitle>
+                  <CardTitle>Подкатегории в категории {selectedCluster}</CardTitle>
                   <CardDescription>Нажмите на подкатегорию для просмотра чатов</CardDescription>
                 </CardHeader>
                 <CardContent className="h-[500px]">
@@ -184,7 +159,7 @@ export default function AdminDashboard() {
           )}
 
           {selectedCluster && selectedSubCluster && (
-              <Card>
+              <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                 <CardHeader>
                   <CardTitle>Чаты в подкатегории {selectedSubCluster}</CardTitle>
                   <CardDescription>Нажмите на чат для просмотра диалога</CardDescription>
@@ -198,4 +173,3 @@ export default function AdminDashboard() {
       </div>
   )
 }
-
