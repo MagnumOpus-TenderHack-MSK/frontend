@@ -21,7 +21,7 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                                                                   pendingMessageId,
                                                                   streamedContent,
                                                                   onMessageReaction,
-                                                                  onSuggestionClick
+                                                                  onSuggestionClick,
                                                               }) => {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -31,99 +31,63 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     const lastScrollPositionRef = useRef<number>(0);
     const previousChatIdRef = useRef<string | null>(null);
 
-    // Access lastCompletedMessage and checkForCompletedMessages from WebSocket context
-    const { lastCompletedMessage, checkForCompletedMessages } = useWebSocket();
+    // Access checkForCompletedMessages from WebSocket context
+    const { checkForCompletedMessages } = useWebSocket();
 
-    // Deduplicate messages and add last completed message if needed
-    const processMessages = useCallback((messages: ChatMessageType[] = []) => {
+    // Deduplicate messages based on their IDs and content
+    const deduplicateMessages = useCallback((messages: ChatMessageType[] = []) => {
         const uniqueMessages = new Map<string, ChatMessageType>();
-
-        // Process existing messages
         messages.forEach(message => {
-            // Skip temporary messages if we have a real one with same content
+            // If this is a temporary message and a real one with the same content exists, skip it.
             if (message.id.startsWith('temp-')) {
-                const existingMessage = Array.from(uniqueMessages.values()).find(
-                    m => !m.id.startsWith('temp-') &&
+                const existing = Array.from(uniqueMessages.values()).find(
+                    m =>
+                        !m.id.startsWith('temp-') &&
                         m.content === message.content &&
                         m.message_type.toLowerCase() === message.message_type.toLowerCase()
                 );
-                if (existingMessage) {
-                    return;
-                }
+                if (existing) return;
             }
-
             uniqueMessages.set(message.id, message);
         });
+        return Array.from(uniqueMessages.values()).sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+    }, []);
 
-        // Add last completed message if it's not already in the messages
-        if (lastCompletedMessage && !uniqueMessages.has(lastCompletedMessage.id)) {
-            const completedMessageToAdd: ChatMessageType = {
-                id: lastCompletedMessage.id,
-                chat_id: currentChat?.id || '',
-                content: lastCompletedMessage.content,
-                message_type: 'ai',
-                status: MessageStatus.COMPLETED,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-                sources: [],
-                files: [],
-                reactions: []
-            };
-
-            uniqueMessages.set(lastCompletedMessage.id, completedMessageToAdd);
-        }
-
-        // Convert back to sorted array
-        return Array.from(uniqueMessages.values())
-            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    }, [currentChat?.id, lastCompletedMessage]);
-
-    // Check for incomplete messages and force-complete them
+    // Periodically check for incomplete messages and force completion if needed
     useEffect(() => {
-        // Periodically check for completion
         const checkInterval = setInterval(() => {
             if (isTyping && pendingMessageId) {
                 checkForCompletedMessages();
             }
         }, 5000);
-
         return () => clearInterval(checkInterval);
     }, [isTyping, pendingMessageId, checkForCompletedMessages]);
 
-    // Update rendered messages when the current chat or last completed message changes
+    // Update rendered messages when currentChat changes
     useEffect(() => {
         if (currentChat?.messages) {
             const chatId = currentChat.id;
-
-            // If switching to a different chat, always scroll to bottom
             if (previousChatIdRef.current !== chatId) {
                 setShouldScrollToBottom(true);
                 previousChatIdRef.current = chatId;
             }
-
-            const processedMessages = processMessages(currentChat.messages);
-            setRenderedMessages(processedMessages);
+            const deduped = deduplicateMessages(currentChat.messages);
+            setRenderedMessages(deduped);
         } else {
             setRenderedMessages([]);
         }
-    }, [currentChat, processMessages, lastCompletedMessage]);
+    }, [currentChat, deduplicateMessages]);
 
-    // Detect if user has scrolled up (to disable auto-scroll)
+    // Detect scroll events to update "near bottom" status
     useEffect(() => {
         const handleScroll = () => {
             if (!containerRef.current) return;
-
             const container = containerRef.current;
-            const scrollPosition = container.scrollTop;
-
-            // Save last scroll position for reference
-            lastScrollPositionRef.current = scrollPosition;
-
-            // Calculate if we're near the bottom (within 200px)
+            lastScrollPositionRef.current = container.scrollTop;
             const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
             setIsNearBottom(isAtBottom);
-
-            // Only update scroll behavior if there's a significant change
             if (isAtBottom !== shouldScrollToBottom) {
                 setShouldScrollToBottom(isAtBottom);
             }
@@ -136,7 +100,7 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
         }
     }, [shouldScrollToBottom]);
 
-    // Scroll to bottom when messages change or new content arrives if appropriate
+    // Scroll to bottom when messages update or new content arrives
     useEffect(() => {
         if ((shouldScrollToBottom || isTyping) && messagesEndRef.current) {
             messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -150,7 +114,6 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
         }
     }, [isTyping]);
 
-    // Add scroll button when user has scrolled up
     const handleScrollToBottom = () => {
         if (messagesEndRef.current) {
             messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -158,18 +121,8 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
         }
     };
 
-    if (isLoadingChats) {
-        return (
-            <div className="flex-1 flex justify-center items-center h-full">
-                <div className="animate-pulse text-center">
-                    <div className="h-6 w-32 bg-muted rounded mx-auto"></div>
-                    <div className="mt-2 h-4 w-48 bg-muted rounded mx-auto"></div>
-                </div>
-            </div>
-        );
-    }
-
-    if (!currentChat || !renderedMessages || renderedMessages.length === 0) {
+    // If there are no chats and no pending message, show suggestions
+    if (!currentChat || (!renderedMessages.length && !pendingMessageId)) {
         return (
             <div className="flex-1 overflow-y-auto flex items-center justify-center p-4" ref={containerRef}>
                 <ChatSuggestions onSuggestionClick={onSuggestionClick} />
@@ -187,32 +140,36 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                 />
             ))}
 
-            {/* Render typing message separately */}
-            {isTyping && pendingMessageId && (
+            {/* Always render the pending message if it exists.
+          Its status reflects whether it's still in progress or completed. */}
+            {pendingMessageId && (
                 <ChatMessage
-                    key={`typing-${pendingMessageId}`}
+                    key={`pending-${pendingMessageId}`}
                     message={{
                         id: pendingMessageId,
                         chat_id: currentChat.id,
                         content: streamedContent || "",
                         message_type: 'ai',
-                        status: MessageStatus.PROCESSING,
+                        status: isTyping ? MessageStatus.PROCESSING : MessageStatus.COMPLETED,
                         created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
+                        updated_at: new Date().toISOString(),
                     }}
-                    isTyping={true}
+                    isTyping={isTyping}
                     typingContent={streamedContent}
+                    onReaction={onMessageReaction}
                 />
             )}
 
-            {/* Scroll to bottom button - only show when not near bottom */}
+            {/* Show a "scroll to bottom" button if the user has scrolled up */}
             {!isNearBottom && (
                 <button
                     onClick={handleScrollToBottom}
                     className="fixed bottom-24 right-6 bg-primary text-white rounded-full p-3 shadow-lg hover:bg-primary/90 transition-opacity opacity-80 hover:opacity-100"
                     aria-label="Scroll to bottom"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
+                         viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="6 9 12 15 18 9"></polyline>
                     </svg>
                 </button>
