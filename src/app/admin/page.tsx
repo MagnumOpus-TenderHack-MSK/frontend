@@ -16,7 +16,7 @@ import { ArrowLeft, ChevronRight } from "lucide-react"
 export default function AdminDashboard() {
   const router = useRouter()
   const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
-    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
+    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 100), // Last 3 days
     to: new Date(),
   })
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null)

@@ -37,19 +37,30 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     // Deduplicate messages based on their IDs and content
     const deduplicateMessages = useCallback((messages: ChatMessageType[] = []) => {
         const uniqueMessages = new Map<string, ChatMessageType>();
+
+        // First pass: add all non-temporary messages to the map
         messages.forEach(message => {
-            // If this is a temporary message and a real one with the same content exists, skip it.
-            if (message.id.startsWith('temp-')) {
-                const existing = Array.from(uniqueMessages.values()).find(
-                    m =>
-                        !m.id.startsWith('temp-') &&
-                        m.content === message.content &&
-                        m.message_type.toLowerCase() === message.message_type.toLowerCase()
-                );
-                if (existing) return;
+            if (!message.id.startsWith('temp-')) {
+                uniqueMessages.set(message.id, message);
             }
-            uniqueMessages.set(message.id, message);
         });
+
+        // Second pass: add temporary messages only if no real message exists with similar content
+        messages.forEach(message => {
+            if (message.id.startsWith('temp-')) {
+                // Check if there's a non-temp message with the same content and type
+                const hasRealMessage = Array.from(uniqueMessages.values()).some(
+                    m => !m.id.startsWith('temp-') &&
+                        m.content === message.content &&
+                        String(m.message_type).toLowerCase() === String(message.message_type).toLowerCase()
+                );
+
+                if (!hasRealMessage) {
+                    uniqueMessages.set(message.id, message);
+                }
+            }
+        });
+
         return Array.from(uniqueMessages.values()).sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
@@ -69,13 +80,18 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     useEffect(() => {
         if (currentChat?.messages) {
             const chatId = currentChat.id;
+
+            // Check if we switched to a new chat
             if (previousChatIdRef.current !== chatId) {
                 setShouldScrollToBottom(true);
                 previousChatIdRef.current = chatId;
             }
+
+            // Process and deduplicate messages
             const deduped = deduplicateMessages(currentChat.messages);
             setRenderedMessages(deduped);
         } else {
+            // Critical fix: ensure we reset messages when no currentChat
             setRenderedMessages([]);
         }
     }, [currentChat, deduplicateMessages]);
@@ -88,6 +104,8 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
             lastScrollPositionRef.current = container.scrollTop;
             const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
             setIsNearBottom(isAtBottom);
+
+            // Only update scroll behavior if it changed
             if (isAtBottom !== shouldScrollToBottom) {
                 setShouldScrollToBottom(isAtBottom);
             }
@@ -121,22 +139,36 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
         }
     };
 
-    // If there are no chats and no pending message, show suggestions
-    if (!currentChat || (!renderedMessages.length && !pendingMessageId)) {
+    // Critical fix: Only render suggestions if there are no messages (empty chat)
+    // This differentiation ensures we don't show messages from other chats
+    const isEmptyChat = !currentChat || (!renderedMessages.length && !pendingMessageId && !isTyping);
+
+    // If we have a currentChat but no messages are loaded yet, show a loading state
+    if (currentChat && isLoadingChats && !renderedMessages.length && !pendingMessageId) {
         return (
             <div className="flex-1 overflow-y-auto flex items-center justify-center p-4" ref={containerRef}>
-                <ChatSuggestions onSuggestionClick={onSuggestionClick} />
+                <div className="animate-pulse text-center">
+                    <div className="h-6 w-32 bg-muted rounded mx-auto mb-4"></div>
+                    <div className="h-4 w-48 bg-muted rounded mx-auto"></div>
+                </div>
             </div>
         );
     }
 
     return (
         <div className="flex-1 overflow-y-auto p-4 space-y-2 relative" ref={containerRef}>
-            {renderedMessages.map((message) => (
+            {/* Render the chat suggestions only if it's an empty chat */}
+            {isEmptyChat && (
+                <ChatSuggestions onSuggestionClick={onSuggestionClick} />
+            )}
+
+            {/* Only render messages if we have a current chat and messages */}
+            {currentChat && renderedMessages.map((message) => (
                 <ChatMessage
                     key={message.id}
                     message={message}
                     onReaction={onMessageReaction}
+                    isTyping={false} // Normal messages are not typing
                 />
             ))}
 
@@ -146,10 +178,10 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                     key={`pending-${pendingMessageId}`}
                     message={{
                         id: pendingMessageId,
-                        chat_id: currentChat.id, // Ensure currentChat is not null here
+                        chat_id: currentChat!.id,
                         content: streamedContent || "",
                         message_type: 'ai',
-                        status: MessageStatus.PROCESSING, // It's always processing if rendered here
+                        status: MessageStatus.PROCESSING,
                         created_at: new Date().toISOString(),
                         updated_at: new Date().toISOString(),
                     }}

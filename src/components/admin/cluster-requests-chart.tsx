@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   BarChart,
   Bar,
@@ -12,11 +12,11 @@ import {
   AreaChart,
   Area,
 } from "recharts";
-import { Skeleton } from "@/components/ui/skeleton"
-import { Button } from "@/components/ui/button"
-import { BarChart2, LineChart } from "lucide-react"
-import { adminApi, ClusterStat } from "@/lib/admin-api"
-import { format } from "date-fns"
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { BarChart2, LineChart as LineChartIcon, Clock, Calendar, RefreshCw } from "lucide-react";
+import { adminApi, ClusterStat } from "@/lib/admin-api";
+import { format } from "date-fns";
 
 interface ClusterRequestsChartProps {
   dateRange: { from: Date; to: Date }
@@ -24,187 +24,415 @@ interface ClusterRequestsChartProps {
   onClusterClick: (cluster: string) => void
 }
 
+type GranularityType = "hour" | "day" | "week";
+
 export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick }: ClusterRequestsChartProps) {
-  const [barData, setBarData] = useState<ClusterStat[]>([])
-  const [timeSeriesData, setTimeSeriesData] = useState<any[]>([])
-  const [clusterColors, setClusterColors] = useState<Record<string, string>>({})
-  const [isLoading, setIsLoading] = useState(true)
-  const [activeIndex, setActiveIndex] = useState<number | null>(null)
+  const [barData, setBarData] = useState<ClusterStat[]>([]);
+  const [timeSeriesData, setTimeSeriesData] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [viewType, setViewType] = useState<"area" | "bar">(() => {
     // Use localStorage if available to persist view preference
     if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("chartViewType")
-      return stored === "bar" ? "bar" : "area"
+      const stored = localStorage.getItem("chartViewType");
+      return stored === "area" ? "area" : "bar";
     }
-    return "area"
-  })
-  const [error, setError] = useState<string | null>(null)
+    return "bar"; // Default to bar
+  });
 
-  // Get random colors for clusters if not provided
-  const getRandomColor = () => {
-    const colors = [
-      "#8884d8",
-      "#82ca9d",
-      "#ffc658",
-      "#ff8042",
-      "#0088FE",
-      "#00C49F",
-      "#FFBB28",
-      "#FF8042",
-      "#a4de6c",
-      "#d0ed57",
-    ]
-    return colors[Math.floor(Math.random() * colors.length)]
-  }
+  const [granularity, setGranularity] = useState<GranularityType>("hour"); // Default to hourly
+  const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
-  // Store view type in localStorage
-  const setStoredViewType = (type: "area" | "bar") => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("chartViewType", type)
-    }
-  }
+  // Format date label based on granularity
+  const formatDateLabel = useCallback((dateLabel: string) => {
+    if (!dateLabel) return "";
 
-  useEffect(() => {
-    const fetchClusterData = async () => {
-      setIsLoading(true)
-      setError(null)
-
+    if (granularity === "hour") {
+      // For hour format, we expect "YYYY-MM-DD HH:00"
       try {
-        // Fetch bar data (either main clusters or subclusters)
-        const clustersResponse = await adminApi.getClusters(parentCluster)
-        let clusters: ClusterStat[] = []
-
-        // Use the appropriate data based on parent cluster
-        if (parentCluster) {
-          clusters = clustersResponse.sub_clusters || []
-        } else {
-          clusters = clustersResponse.general_clusters || []
+        const [datePart, timePart] = dateLabel.split(" ");
+        if (timePart) {
+          return timePart.substring(0, 5); // Just show HH:00
         }
-
-        // Filter out clusters with zero requests
-        clusters = clusters.filter(cluster => cluster.requests > 0)
-
-        // If no clusters with data, provide a message
-        if (clusters.length === 0) {
-          setError("No data available for the selected period")
-        }
-
-        // Add colors if not present
-        const colors: Record<string, string> = {}
-        clusters.forEach(cluster => {
-          if (!cluster.color) {
-            cluster.color = getRandomColor()
-          }
-          colors[cluster.name] = cluster.color
-        })
-
-        setClusterColors(colors)
-        setBarData(clusters)
-
-        // Format dates for the API request
-        const startDate = format(dateRange.from, "yyyy-MM-dd")
-        const endDate = format(dateRange.to, "yyyy-MM-dd")
-
-        try {
-          // Fetch time series data
-          const timeseries = await adminApi.getClusterTimeseries(startDate, endDate)
-          setTimeSeriesData(timeseries)
-        } catch (timeseriesError) {
-          console.error("Error fetching timeseries data:", timeseriesError)
-          // Don't fail the whole component if just timeseries fails
-          setTimeSeriesData([])
-        }
-
-      } catch (error) {
-        console.error("Error fetching cluster data:", error)
-        setError("Failed to load data. Please try again later.")
-        setBarData([])
-        setTimeSeriesData([])
-      } finally {
-        setIsLoading(false)
+        return dateLabel;
+      } catch (e) {
+        return dateLabel;
+      }
+    } else if (granularity === "week") {
+      // For week, show "Week of MM/DD"
+      try {
+        const date = new Date(dateLabel);
+        return `Week of ${date.getMonth() + 1}/${date.getDate()}`;
+      } catch (e) {
+        return dateLabel;
+      }
+    } else {
+      // For day, show MM/DD
+      try {
+        const date = new Date(dateLabel);
+        return `${date.getMonth() + 1}/${date.getDate()}`;
+      } catch (e) {
+        return dateLabel;
       }
     }
+  }, [granularity]);
 
-    fetchClusterData()
-  }, [dateRange, parentCluster])
+  // This function gets available cluster names from time series data
+  const getAvailableClustersFromTimeSeries = useCallback((data: any[]) => {
+    const clusters = new Set<string>();
 
-  const handleBarClick = (data: any, index: number) => {
+    // Extract all property names from all data points that aren't "date"
+    data.forEach(dataPoint => {
+      Object.keys(dataPoint).forEach(key => {
+        if (key !== "date" && dataPoint[key] > 0) {
+          clusters.add(key);
+        }
+      });
+    });
+
+    return Array.from(clusters);
+  }, []);
+
+  // Function to get a unique color for a cluster
+  const getColorForCluster = useCallback((clusterName: string, barData: ClusterStat[]) => {
+    // First try to find color in bar data
+    const clusterInBarData = barData.find(item => item.name === clusterName);
+    if (clusterInBarData?.color) {
+      return clusterInBarData.color;
+    }
+
+    // Fallback to hash-based color (deterministic based on name)
+    let hash = 0;
+    for (let i = 0; i < clusterName.length; i++) {
+      hash = clusterName.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    let color = '#';
+    for (let i = 0; i < 3; i++) {
+      const value = (hash >> (i * 8)) & 0xFF;
+      color += ('00' + value.toString(16)).substr(-2);
+    }
+    return color;
+  }, []);
+
+  // Get non-zero data points from time series data
+  const nonZeroTimeSeriesData = useMemo(() => {
+    // First, identify which dates have at least one non-zero value
+    const datesWithData = timeSeriesData.filter(item => {
+      for (const key in item) {
+        if (key !== "date" && item[key] > 0) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    // Then for each of those dates, only include categories with non-zero values
+    return datesWithData.map(item => {
+      const nonZeroItem: any = { date: item.date };
+      for (const key in item) {
+        if (key !== "date" && item[key] > 0) {
+          nonZeroItem[key] = item[key];
+        }
+      }
+      return nonZeroItem;
+    });
+  }, [timeSeriesData]);
+
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const startDate = format(dateRange.from, "yyyy-MM-dd");
+      const endDate = format(dateRange.to, "yyyy-MM-dd");
+
+      // First fetch the bar data
+      const clustersResponse = parentCluster
+          ? await adminApi.getClusters(parentCluster)
+          : await adminApi.getClusters();
+
+      console.log("Clusters response:", clustersResponse);
+
+      let clusters: ClusterStat[] = [];
+
+      // Determine which data to use based on response structure
+      if (parentCluster) {
+        if (clustersResponse.sub_clusters && Array.isArray(clustersResponse.sub_clusters)) {
+          // Filter out any subclusters with zero requests
+          clusters = clustersResponse.sub_clusters.filter(item => item.requests > 0);
+        }
+      } else {
+        if (clustersResponse.general_clusters && Array.isArray(clustersResponse.general_clusters)) {
+          // Filter out any general clusters with zero requests
+          clusters = clustersResponse.general_clusters.filter(item => item.requests > 0);
+        }
+      }
+
+      // Store the bar data
+      setBarData(clusters);
+
+      // Then fetch time series data
+      try {
+        const timeseries = await adminApi.getClusterTimeseries(startDate, endDate, granularity);
+        console.log("Timeseries data:", timeseries);
+
+        // Save all timeseries data, we'll filter it in useMemo
+        if (Array.isArray(timeseries)) {
+          setTimeSeriesData(timeseries);
+        } else {
+          setTimeSeriesData([]);
+        }
+      } catch (timeseriesError) {
+        console.error("Error fetching timeseries data:", timeseriesError);
+        setTimeSeriesData([]);
+      }
+    } catch (error) {
+      console.error("Error fetching cluster data:", error);
+      setError("Failed to load data. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [dateRange, parentCluster, granularity]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData, retryCount]);
+
+  const handleRefresh = () => {
+    setRetryCount(prev => prev + 1);
+  };
+
+  // Get non-zero bar data
+  const nonZeroBarData = useMemo(() => {
+    return barData.filter(item => item.requests > 0);
+  }, [barData]);
+
+  // Get available clusters for each chart type
+  const barChartClusters = useMemo(() => nonZeroBarData.map(item => item.name), [nonZeroBarData]);
+
+  const areaChartClusters = useMemo(() =>
+          getAvailableClustersFromTimeSeries(nonZeroTimeSeriesData),
+      [nonZeroTimeSeriesData, getAvailableClustersFromTimeSeries]
+  );
+
+  // Check if we have data for each chart type
+  const hasBarData = nonZeroBarData.length > 0;
+  const hasAreaData = nonZeroTimeSeriesData.length > 0 && areaChartClusters.length > 0;
+
+  const handleBarClick = useCallback((data: any, index: number) => {
     if (data && data.name) {
-      setActiveIndex(index)
-      onClusterClick(data.name)
+      setActiveIndex(index);
+      onClusterClick(data.name);
     }
-  }
+  }, [onClusterClick]);
 
-  const handleAreaClick = (props: any) => {
-    // Extract the cluster name from the dataKey
-    if (props && props.dataKey && props.dataKey !== "date") {
-      onClusterClick(props.dataKey)
+  const toggleViewType = useCallback(() => {
+    const newType = viewType === "area" ? "bar" : "area";
+    setViewType(newType);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("chartViewType", newType);
     }
-  }
+  }, [viewType]);
 
-  const toggleViewType = () => {
-    const newType = viewType === "area" ? "bar" : "area"
-    setViewType(newType)
-    setStoredViewType(newType)
-  }
+  const changeGranularity = useCallback((newGranularity: GranularityType) => {
+    setGranularity(newGranularity);
+  }, []);
 
   if (isLoading) {
-    return <Skeleton className="w-full h-[400px]" />
-  }
-
-  if (error && barData.length === 0) {
-    return (
-        <div className="flex flex-col items-center justify-center h-full p-12 text-center">
-          <p className="text-muted-foreground mb-4">{error}</p>
-          <Button variant="outline" onClick={() => window.location.reload()}>
-            Reload Data
-          </Button>
-        </div>
-    )
+    return <Skeleton className="w-full h-[400px]" />;
   }
 
   // Custom tooltip for bar chart
   const CustomBarTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload || !payload.length) return null
+    if (!active || !payload || !payload.length) return null;
 
-    const total = barData.reduce((sum, item) => sum + item.requests, 0)
+    const total = nonZeroBarData.reduce((sum, item) => sum + item.requests, 0);
 
     return (
         <div className="bg-background border rounded p-2 shadow-md text-sm z-50">
           <p className="font-medium">{`${label}`}</p>
           <p className="text-sm">{`${payload[0].value} запросов (${((payload[0].value / total) * 100).toFixed(1)}%)`}</p>
         </div>
-    )
-  }
+    );
+  };
 
   // Custom tooltip for area chart
   const CustomAreaTooltip = ({ active, payload, label }: any) => {
-    if (!active || !payload || !payload.length) return null
+    if (!active || !payload || !payload.length) return null;
+
+    // Format full date for tooltip based on granularity
+    let formattedDate = label;
+    try {
+      if (granularity === "hour") {
+        // For hour view, show full date and time
+        const [datePart, timePart] = label.split(" ");
+        const date = new Date(datePart);
+        formattedDate = `${date.getMonth() + 1}/${date.getDate()} ${timePart}`;
+      } else if (granularity === "day") {
+        // For day view, show MM/DD/YYYY
+        const date = new Date(label);
+        formattedDate = `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}`;
+      }
+    } catch (e) {
+      // Use original label if parsing fails
+    }
 
     return (
         <div className="bg-background border rounded p-2 shadow-md text-sm z-50">
-          <p className="font-medium">{`Дата: ${label}`}</p>
+          <p className="font-medium">{`Дата: ${formattedDate}`}</p>
           {payload.map((entry: any, index: number) => (
               <p key={`item-${index}`} style={{ color: entry.color }} className="text-sm">
                 {`${entry.name}: ${entry.value} запросов`}
               </p>
           ))}
         </div>
-    )
-  }
+    );
+  };
 
-  // Handle no data case
-  if (barData.length === 0) {
+  // Function to render the appropriate chart
+  const renderChart = () => {
+    if (viewType === "bar" && hasBarData) {
+      return (
+          <ResponsiveContainer width="100%" height="90%">
+            <BarChart
+                data={nonZeroBarData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                  dataKey="name"
+                  angle={-45}
+                  textAnchor="end"
+                  height={70}
+                  tick={{ fontSize: 12 }}
+                  interval={0}
+              />
+              <YAxis />
+              <Tooltip content={<CustomBarTooltip />} />
+              <Legend />
+              <Bar
+                  dataKey="requests"
+                  name="Количество запросов"
+                  onClick={handleBarClick}
+                  cursor="pointer"
+              >
+                {nonZeroBarData.map((entry, index) => (
+                    <Cell
+                        key={`cell-${index}`}
+                        fill={activeIndex === index ? "#ff7300" : entry.color}
+                        opacity={activeIndex === null || activeIndex === index ? 1 : 0.6}
+                    />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+      );
+    } else if (viewType === "area" && hasAreaData) {
+      return (
+          <ResponsiveContainer width="100%" height="90%">
+            <AreaChart
+                data={nonZeroTimeSeriesData}
+                margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                  dataKey="date"
+                  tickFormatter={formatDateLabel}
+                  angle={-45}
+                  textAnchor="end"
+                  height={80}
+                  tick={{ fontSize: 12 }}
+              />
+              <YAxis />
+              <Tooltip content={<CustomAreaTooltip />} />
+              <Legend />
+              {areaChartClusters.map((clusterName) => {
+                const color = getColorForCluster(clusterName, nonZeroBarData);
+                return (
+                    <Area
+                        key={clusterName}
+                        type="monotone"
+                        dataKey={clusterName}
+                        name={clusterName}
+                        stackId="1"
+                        stroke={color}
+                        fill={color}
+                        onClick={() => onClusterClick(clusterName)}
+                        style={{ cursor: "pointer" }}
+                    />
+                );
+              })}
+            </AreaChart>
+          </ResponsiveContainer>
+      );
+    } else {
+      return (
+          <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+            <p className="text-muted-foreground mb-6">Нет данных для выбранного типа графика</p>
+            <Button
+                variant="outline"
+                onClick={toggleViewType}
+                className="flex items-center gap-2"
+            >
+              {viewType === "area" ? <BarChart2 size={16} /> : <LineChartIcon size={16} />}
+              {viewType === "area" ? "Переключить на гистограмму" : "Переключить на график"}
+            </Button>
+          </div>
+      );
+    }
+  };
+
+  // Check if we have any data to display
+  const hasData = hasBarData || hasAreaData;
+
+  if (error || !hasData) {
     return (
-        <div className="flex flex-col items-center justify-center h-full">
-          <p className="text-muted-foreground">Нет данных для отображения</p>
+        <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+          <p className="text-muted-foreground mb-6">{error || "Нет данных для отображения"}</p>
+          <Button variant="outline" onClick={handleRefresh} className="flex items-center gap-2">
+            <RefreshCw size={16} />
+            Обновить данные
+          </Button>
         </div>
-    )
+    );
   }
 
   return (
       <div className="w-full h-full">
-        <div className="flex justify-end mb-4">
+        <div className="flex justify-between mb-4">
+          {/* Granularity toggle */}
+          <div className="flex gap-2">
+            <Button
+                variant={granularity === "hour" ? "default" : "outline"}
+                size="sm"
+                onClick={() => changeGranularity("hour")}
+                className="flex items-center gap-1"
+            >
+              <Clock size={14} />
+              <span className="hidden sm:inline">Часы</span>
+            </Button>
+            <Button
+                variant={granularity === "day" ? "default" : "outline"}
+                size="sm"
+                onClick={() => changeGranularity("day")}
+                className="flex items-center gap-1"
+            >
+              <Calendar size={14} />
+              <span className="hidden sm:inline">Дни</span>
+            </Button>
+            <Button
+                variant={granularity === "week" ? "default" : "outline"}
+                size="sm"
+                onClick={() => changeGranularity("week")}
+                className="flex items-center gap-1"
+            >
+              <Calendar size={14} />
+              <span className="hidden sm:inline">Недели</span>
+            </Button>
+          </div>
+
+          {/* View type toggle */}
           <Button variant="outline" size="sm" onClick={toggleViewType} className="flex items-center gap-2">
             {viewType === "area" ? (
                 <>
@@ -213,80 +441,15 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
                 </>
             ) : (
                 <>
-                  <LineChart size={16} />
-                  <span className="hidden sm:inline">Временная шкала</span>
+                  <LineChartIcon size={16} />
+                  <span className="hidden sm:inline">График</span>
                 </>
             )}
           </Button>
         </div>
 
-        {viewType === "bar" ? (
-            <ResponsiveContainer width="100%" height="90%">
-              <BarChart
-                  data={barData}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
-                  // Fixing 'this is undefined' error by using arrow function
-                  onClick={(data) => { /*Do nothing, we handle in cell click*/ }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis
-                    dataKey="name"
-                    angle={-45}
-                    textAnchor="end"
-                    height={70}
-                    tick={{ fontSize: 12 }}
-                    interval={0}
-                />
-                <YAxis />
-                <Tooltip content={<CustomBarTooltip />} />
-                <Legend />
-                <Bar
-                    dataKey="requests"
-                    name="Количество запросов"
-                    // Fix method binding issues by using a function that calls handleBarClick
-                    onClick={(data, index) => handleBarClick(data, index)}
-                    cursor="pointer"
-                >
-                  {barData.map((entry, index) => (
-                      <Cell
-                          key={`cell-${index}`}
-                          fill={activeIndex === index ? "#ff7300" : entry.color}
-                          opacity={activeIndex === null || activeIndex === index ? 1 : 0.6}
-                          // Fix 'this is undefined' by using arrow function
-                          onClick={() => handleBarClick(entry, index)}
-                      />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-        ) : (
-            <ResponsiveContainer width="100%" height="90%">
-              <AreaChart
-                  data={timeSeriesData}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis />
-                <Tooltip content={<CustomAreaTooltip />} />
-                <Legend />
-                {barData.map((cluster) => (
-                    <Area
-                        key={cluster.name}
-                        type="monotone"
-                        dataKey={cluster.name}
-                        name={cluster.name}
-                        stackId="1"
-                        stroke={cluster.color}
-                        fill={cluster.color}
-                        // Fix 'this is undefined' by using arrow function
-                        onClick={() => onClusterClick(cluster.name)}
-                        style={{ cursor: "pointer" }}
-                    />
-                ))}
-              </AreaChart>
-            </ResponsiveContainer>
-        )}
+        {/* Render the appropriate chart */}
+        {renderChart()}
       </div>
-  )
+  );
 }

@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useState, useEffect, useCallback } from "react";
 import { Menu, X, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,7 +19,7 @@ import {
 import { ChatApi } from "@/lib/chat-api";
 import { FileApi } from "@/lib/file-api";
 
-// Default suggestions for new users
+// Default suggestions for new users - only used for NEW chats
 const DEFAULT_SUGGESTIONS: MessageSuggestion[] = [
     { id: "default-sug-1", text: "Как зарегистрироваться на портале?", icon: "user-plus" },
     { id: "default-sug-2", text: "Как найти активные закупки?", icon: "search" },
@@ -35,10 +33,15 @@ const ChatAppContent = () => {
     const { user, logout } = useAuth();
     const {
         connectWebSocket,
+        disconnectWebSocket,
+        isConnected,
         isTyping,
         pendingMessageId,
         streamedContent,
         lastCompletedMessage,
+        chatSuggestions,
+        chatNameUpdate,
+        clearSuggestions
     } = useWebSocket();
 
     const [mounted, setMounted] = useState(false);
@@ -46,26 +49,50 @@ const ChatAppContent = () => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [chatHistory, setChatHistory] = useState<Chat[]>([]);
     const [isLoadingChats, setIsLoadingChats] = useState(true);
-    const [chatSuggestions, setChatSuggestions] = useState<MessageSuggestion[]>(DEFAULT_SUGGESTIONS);
+    const [initialSuggestions, setInitialSuggestions] = useState<MessageSuggestion[]>(DEFAULT_SUGGESTIONS);
     const [inputSuggestions, setInputSuggestions] = useState<MessageSuggestion[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [fileUploadProgress, setFileUploadProgress] = useState<number | null>(null);
+    const [messagesLoaded, setMessagesLoaded] = useState<Record<string, boolean>>({});
 
     const currentChat = activeChat
         ? chatHistory.find((chat) => chat.id === activeChat)
         : null;
+
+    // Update chat title when we receive a new title from AI
+    useEffect(() => {
+        if (chatNameUpdate && activeChat) {
+            setChatHistory(prevHistory =>
+                prevHistory.map(chat =>
+                    chat.id === activeChat ?
+                        {...chat, title: chatNameUpdate} :
+                        chat
+                )
+            );
+        }
+    }, [chatNameUpdate, activeChat]);
 
     const loadChats = async () => {
         try {
             setIsLoadingChats(true);
             setError(null);
             const response = await ChatApi.getChats();
-            setChatHistory(response.items);
-            if (response.items.length > 0 && !activeChat) {
-                const sortedChats = [...response.items].sort(
-                    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-                );
-                setActiveChat(sortedChats[0].id);
+
+            // Sort chats by updated_at (newest first)
+            const sortedChats = [...response.items].sort(
+                (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+            );
+
+            setChatHistory(sortedChats);
+
+            // Don't automatically select a chat on initial load
+            // This ensures users always see the new chat screen first
+            if (sortedChats.length > 0 && activeChat) {
+                // If we already have an active chat, ensure it still exists
+                const chatExists = sortedChats.some(chat => chat.id === activeChat);
+                if (!chatExists) {
+                    setActiveChat(null);
+                }
             }
         } catch (err) {
             console.error("Error loading chats:", err);
@@ -78,18 +105,37 @@ const ChatAppContent = () => {
     const loadChat = async (chatId: string) => {
         try {
             setError(null);
+
+            // Check if messages were already loaded
             const existingChat = chatHistory.find((c) => c.id === chatId);
-            if (existingChat && !existingChat.messages?.length) {
-                const messageResponse = await ChatApi.getChatMessages(chatId);
-                setChatHistory((prev) =>
-                    prev.map((chat) =>
-                        chat.id === chatId ? { ...chat, messages: messageResponse.items } : chat
-                    )
-                );
-            }
+            const hasMessages = existingChat && existingChat.messages && existingChat.messages.length > 0;
+
+            // Always reload messages to ensure we have the latest
+            const messageResponse = await ChatApi.getChatMessages(chatId);
+
+            // Store that messages were loaded for this chat
+            setMessagesLoaded(prev => ({...prev, [chatId]: true}));
+
+            setChatHistory((prev) =>
+                prev.map((chat) => {
+                    if (chat.id === chatId) {
+                        // Preserve the updated chat
+                        const updatedChat = {
+                            ...chat,
+                            messages: messageResponse.items
+                        };
+
+                        return updatedChat;
+                    }
+                    return chat;
+                })
+            );
+
+            return messageResponse.items;
         } catch (err) {
             console.error(`Error loading chat ${chatId}:`, err);
             setError("Failed to load chat messages. Please try again later.");
+            return [];
         }
     };
 
@@ -97,54 +143,93 @@ const ChatAppContent = () => {
         try {
             setError(null);
             const newChat = await ChatApi.createChat({ title: "Новый чат" });
-            setChatHistory((prev) => [...prev, newChat]);
+
+            // IMPORTANT: Initialize with an empty messages array
+            newChat.messages = [];
+
+            // Add new chat at the beginning of the list (top)
+            setChatHistory((prev) => [newChat, ...prev]);
+
             setActiveChat(newChat.id);
             setSidebarOpen(false);
-            connectWebSocket(newChat.id);
+
+            // Mark as messages loaded (even though it's empty)
+            setMessagesLoaded(prev => ({...prev, [newChat.id]: true}));
+
+            // Connect to WebSocket for the new chat, but use a flag to indicate it's a fresh chat
+            // We'll modify the WebSocket context to handle this flag
+            disconnectWebSocket(); // First ensure any existing connection is closed
+
+            // Delay the WebSocket connection to ensure UI is updated first
+            setTimeout(() => {
+                connectWebSocket(newChat.id, true); // Pass true to indicate it's a new chat
+            }, 100);
+
+            // Clear any existing suggestions when creating a new chat
+            clearSuggestions();
+
+            // Reset input suggestions to default for new chat
+            setInputSuggestions(DEFAULT_SUGGESTIONS);
+
+            console.log("Created new chat:", newChat.id);
+            return newChat;
         } catch (err) {
             console.error("Error creating new chat:", err);
             setError("Failed to create new chat. Please try again later.");
+            throw err;
         }
     };
 
-    const handleChatSelect = (chatId: string) => {
+    const handleChatSelect = async (chatId: string) => {
+        if (activeChat === chatId) return;
+
+        // Disconnect from current WebSocket connection first
+        if (activeChat && isConnected) {
+            disconnectWebSocket();
+        }
+
         setActiveChat(chatId);
         setSidebarOpen(false);
-        loadChat(chatId);
+
+        // Clear suggestions when switching chats
+        clearSuggestions();
+
+        // Load messages first before connecting to WebSocket
+        const messages = await loadChat(chatId);
+
+        // Check if there's an in-progress message
+        const hasInProgressMessage = messages.some(msg =>
+            msg.message_type === "ai" &&
+            (msg.status === MessageStatus.PENDING || msg.status === MessageStatus.PROCESSING)
+        );
+
+        // Connect to WebSocket to receive updates
         connectWebSocket(chatId);
     };
 
+    // This function is now only used for existing chats, not new ones
     const generateRelevantSuggestions = (message: string) => {
-        const registrationKeywords = ["регистрация", "зарегистрироваться", "аккаунт", "создать"];
-        const techSupportKeywords = ["ошибка", "проблема", "не работает", "техническая"];
-        const procurementKeywords = ["закупка", "поставка", "тендер", "аукцион", "оферта"];
-        const lowercaseMessage = message.toLowerCase();
-        if (registrationKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
-            setInputSuggestions([
-                { id: `sug-reg-1-${Date.now()}`, text: "Какие документы нужны для регистрации?", icon: "file-text" },
-                { id: `sug-reg-2-${Date.now()}`, text: "Как долго рассматривается заявка?", icon: "help-circle" },
-                { id: `sug-reg-3-${Date.now()}`, text: "Что делать если отклонили заявку?", icon: "alert-triangle" },
-            ]);
-            return;
-        }
-        if (techSupportKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
-            setInputSuggestions([
-                { id: `sug-tech-1-${Date.now()}`, text: "Не загружаются документы", icon: "alert-triangle" },
-                { id: `sug-tech-2-${Date.now()}`, text: "Как сбросить пароль?", icon: "help-circle" },
-                { id: `sug-tech-3-${Date.now()}`, text: "Не приходят уведомления", icon: "alert-triangle" },
-            ]);
-            return;
-        }
-        if (procurementKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
-            setInputSuggestions([
-                { id: `sug-proc-1-${Date.now()}`, text: "Как найти актуальные закупки?", icon: "search" },
-                { id: `sug-proc-2-${Date.now()}`, text: "Что такое котировочная сессия?", icon: "help-circle" },
-                { id: `sug-proc-3-${Date.now()}`, text: "Как подать заявку на участие?", icon: "file-text" },
-            ]);
-            return;
-        }
+        // We'll only use AI suggestions, not these generated ones
+        // Keeping the structure in case we need to revert
         setInputSuggestions([]);
     };
+
+    const deduplicateAndSortMessages = useCallback((messages: ChatMessage[] = []) => {
+        const uniqueMessages = new Map<string, ChatMessage>();
+        messages.forEach(message => {
+            // Prioritize non-temporary messages if IDs match
+            const existing = uniqueMessages.get(message.id);
+            if (!existing || !existing.id.startsWith('temp-')) {
+                uniqueMessages.set(message.id, message);
+            } else if (existing && existing.id.startsWith('temp-') && !message.id.startsWith('temp-')) {
+                // Replace temp message with real message if real one arrives
+                uniqueMessages.set(message.id, message);
+            }
+        });
+        return Array.from(uniqueMessages.values()).sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+    }, []);
 
     const handleSendMessage = async (message: string, files?: File[]) => {
         if ((!message || !message.trim()) && (!files || files.length === 0)) return;
@@ -191,58 +276,51 @@ const ChatAppContent = () => {
             }
 
             // Create new chat or use existing chat
-            if (!activeChat) {
-                console.log("Creating new chat...");
+            let targetChatId = activeChat;
+            let isNewChat = false;
+
+            if (!targetChatId) {
+                // Create a new chat
                 const chatTitle = message.length > 20 ? message.substring(0, 20) + "..." : message;
                 const newChat = await ChatApi.createChat({ title: chatTitle });
                 console.log(`New chat created: ${newChat.id}`);
 
-                // Add to chat history immediately to prevent duplication
+                // Important: Initialize with an empty messages array
+                newChat.messages = [];
+
+                // Add to beginning of chat history (top)
                 setChatHistory(prev => {
                     // Check if chat with this ID already exists
                     if (prev.some(c => c.id === newChat.id)) {
                         return prev;
                     }
-                    return [...prev, newChat];
+                    return [newChat, ...prev]; // Add to beginning, not end
                 });
 
-                setActiveChat(newChat.id);
-                connectWebSocket(newChat.id);
+                targetChatId = newChat.id;
+                setActiveChat(targetChatId);
+                setMessagesLoaded(prev => ({...prev, [targetChatId]: true}));
+                isNewChat = true;
+
+                // Connect to WebSocket
+                connectWebSocket(targetChatId);
 
                 // Wait for connection to establish
                 await new Promise(resolve => setTimeout(resolve, 500));
-                await sendMessageToChat(newChat.id, message, fileIds, fileReferences);
-            } else {
-                console.log(`Sending to existing chat: ${activeChat}`);
-                await sendMessageToChat(activeChat, message, fileIds, fileReferences);
             }
 
-            generateRelevantSuggestions(message);
-            setSidebarOpen(false);
+            // Send the message
+            await sendMessageToChat(targetChatId, message, fileIds, fileReferences);
+
+            // Reset suggestions - we'll only use AI suggestions for responses
             setInputSuggestions([]);
+            setSidebarOpen(false);
         } catch (error) {
             console.error("Error sending message:", error);
             setError("Failed to send message. Please try again.");
             setFileUploadProgress(null);
         }
     };
-
-    const deduplicateAndSortMessages = useCallback((messages: ChatMessage[] = []) => {
-        const uniqueMessages = new Map<string, ChatMessage>();
-        messages.forEach(message => {
-            // Prioritize non-temporary messages if IDs match (or content/type match)
-            const existing = uniqueMessages.get(message.id);
-            if (!existing || !existing.id.startsWith('temp-')) {
-                 uniqueMessages.set(message.id, message);
-            } else if (existing && existing.id.startsWith('temp-') && !message.id.startsWith('temp-')) {
-                 // Replace temp message with real message if real one arrives
-                 uniqueMessages.set(message.id, message);
-            }
-        });
-        return Array.from(uniqueMessages.values()).sort(
-            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
-    }, []);
 
     const sendMessageToChat = async (
         chatId: string,
@@ -280,11 +358,22 @@ const ChatAppContent = () => {
                             updatedChat.title =
                                 content.length > 20 ? content.substring(0, 20) + "..." : content;
                         }
+
                         return updatedChat;
                     }
                     return chat;
                 })
             );
+
+            // Re-sort the chat list to put this chat at the top
+            setChatHistory(prev => {
+                const updatedChat = prev.find(chat => chat.id === chatId);
+                if (!updatedChat) return prev;
+
+                // Remove the chat and add it to the beginning
+                const otherChats = prev.filter(chat => chat.id !== chatId);
+                return [updatedChat, ...otherChats];
+            });
 
             // Send actual message to API
             await ChatApi.sendMessage(chatId, {
@@ -365,7 +454,7 @@ const ChatAppContent = () => {
                     console.error(`Error adding reaction (attempt ${retryCount + 1}):`, error);
                     retryCount++;
                     if (retryCount <= maxRetries) {
-                        // Wait before retrying
+                        // Wait before retry
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     } else {
                         throw error; // Rethrow if all retries failed
@@ -390,9 +479,13 @@ const ChatAppContent = () => {
             if (!targetChatId) {
                 // Create a new chat if none is active
                 const newChat = await ChatApi.createChat({ title: "Запрос поддержки" });
-                setChatHistory(prev => [...prev, newChat]);
+                // Initialize with empty messages array
+                newChat.messages = [];
+                // Add at the beginning (top of the list)
+                setChatHistory(prev => [newChat, ...prev]);
                 targetChatId = newChat.id;
                 setActiveChat(targetChatId);
+                setMessagesLoaded(prev => ({...prev, [targetChatId]: true}));
                 connectWebSocket(targetChatId);
                 await new Promise(resolve => setTimeout(resolve, 500)); // Wait for connection
             }
@@ -400,7 +493,56 @@ const ChatAppContent = () => {
             // Send the user message first
             await sendMessageToChat(targetChatId, "Я хотел бы подключиться к оператору поддержки.");
 
-            // Create and send system message
+            // Create optimistic system message first for UI responsiveness
+            const optimisticSystemMessage: ChatMessage = {
+                id: `temp-system-${Date.now()}`,
+                chat_id: targetChatId,
+                content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
+                message_type: "SYSTEM",
+                status: MessageStatus.COMPLETED,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            };
+
+            // Add optimistic system message to chat history
+            setChatHistory(prevHistory =>
+                prevHistory.map(chat => {
+                    if (chat.id === targetChatId) {
+                        // Check if this system message already exists to avoid duplicates
+                        const hasSimilarSystemMessage = (chat.messages || []).some(
+                            msg =>
+                                (msg.message_type === "SYSTEM" || msg.message_type === "system") &&
+                                msg.content.includes("Запрос на соединение с оператором")
+                        );
+
+                        if (hasSimilarSystemMessage) {
+                            return chat; // Don't add duplicate system messages
+                        }
+
+                        const existingMessages = chat.messages || [];
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, optimisticSystemMessage]);
+
+                        return {
+                            ...chat,
+                            messages: updatedMessages,
+                            updated_at: new Date().toISOString(),
+                        };
+                    }
+                    return chat;
+                })
+            );
+
+            // Move chat to top of list
+            setChatHistory(prev => {
+                const updatedChat = prev.find(chat => chat.id === targetChatId);
+                if (!updatedChat) return prev;
+
+                // Remove the chat and add it to the beginning
+                const otherChats = prev.filter(chat => chat.id !== targetChatId);
+                return [updatedChat, ...otherChats];
+            });
+
+            // Create and send actual system message
             try {
                 const systemMessage = await ChatApi.sendSystemMessage(targetChatId, {
                     content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
@@ -409,24 +551,15 @@ const ChatAppContent = () => {
 
                 console.log('System message created:', systemMessage);
 
-                // Add system message to chat history
+                // Replace optimistic system message with real one
                 setChatHistory(prevHistory =>
                     prevHistory.map(chat => {
                         if (chat.id === targetChatId) {
-                            // Check if this system message already exists to avoid duplicates
-                            const hasSimilarSystemMessage = (chat.messages || []).some(
-                                msg =>
-                                    (msg.message_type === "SYSTEM" || msg.message_type === "system") &&
-                                    msg.content.includes("Запрос на соединение с оператором")
-                            );
-
-                            if (hasSimilarSystemMessage) {
-                                return chat; // Don't add duplicate system messages
-                            }
-
                             return {
                                 ...chat,
-                                messages: [...(chat.messages || []), systemMessage],
+                                messages: (chat.messages || []).map(msg =>
+                                    msg.id === optimisticSystemMessage.id ? systemMessage : msg
+                                ),
                                 updated_at: new Date().toISOString(),
                             };
                         }
@@ -435,41 +568,13 @@ const ChatAppContent = () => {
                 );
             } catch (error) {
                 console.error("Error sending system message:", error);
-
-                // Create a client-side only system message as fallback
-                const fallbackSystemMessage = {
-                    id: `system-${Date.now()}`,
-                    chat_id: targetChatId,
-                    content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
-                    message_type: "SYSTEM",
-                    status: "COMPLETED",
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                    sources: [],
-                    files: [],
-                    reactions: []
-                };
-
-                // Add fallback system message to chat history
-                setChatHistory(prevHistory =>
-                    prevHistory.map(chat => {
-                        if (chat.id === targetChatId) {
-                            return {
-                                ...chat,
-                                messages: [...(chat.messages || []), fallbackSystemMessage],
-                                updated_at: new Date().toISOString(),
-                            };
-                        }
-                        return chat;
-                    })
-                );
+                // Keep the optimistic message - no need to remove it
             }
         } catch (error) {
             console.error("Error requesting support:", error);
             setError("Failed to request support. Please try again.");
         }
     };
-
 
     const handleSuggestionClick = (text: string) => {
         handleSendMessage(text);
@@ -479,24 +584,36 @@ const ChatAppContent = () => {
     useEffect(() => {
         if (user) {
             loadChats();
+            // IMPORTANT: Force a clean "new chat" state - don't select any chat
+            setActiveChat(null);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user]); // Keep dependencies minimal if loadChats is stable
+    }, [user]);
+
 
     // Load chat and connect to WebSocket when activeChat changes
     useEffect(() => {
         if (activeChat) {
-            const timer = setTimeout(() => {
-                loadChat(activeChat);
+            // Check if messages are already loaded for this chat
+            const hasLoadedMessages = messagesLoaded[activeChat];
+
+            if (!hasLoadedMessages) {
+                loadChat(activeChat).then(() => {
+                    connectWebSocket(activeChat);
+                });
+            } else {
                 connectWebSocket(activeChat);
-            }, 300); // Debounce
-
-            return () => clearTimeout(timer);
+            }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeChat]); // Keep dependencies minimal if functions are stable
 
-    // --- START: New useEffect for handling completed AI messages ---
+        // Cleanup function to disconnect WebSocket when changing chats
+        return () => {
+            if (activeChat && isConnected) {
+                disconnectWebSocket();
+            }
+        };
+    }, [activeChat, isConnected, messagesLoaded]);
+
+    // Update chat history when a message is completed
     useEffect(() => {
         if (lastCompletedMessage && activeChat) {
             console.log("Processing completed message:", lastCompletedMessage.id);
@@ -505,14 +622,13 @@ const ChatAppContent = () => {
                     if (chat.id === activeChat) {
                         const existingMessages = chat.messages || [];
                         const newMessage: ChatMessage = {
-                            id: lastCompletedMessage.id, // Use the real ID
+                            id: lastCompletedMessage.id,
                             chat_id: activeChat,
                             content: lastCompletedMessage.content,
-                            message_type: "ai", // Assuming AI response
-                            status: MessageStatus.COMPLETED, // Mark as completed
-                            created_at: new Date().toISOString(), // Ideally use server timestamp if available
+                            message_type: "ai",
+                            status: MessageStatus.COMPLETED,
+                            created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString(),
-                            // Initialize potentially missing fields
                             sources: [],
                             reactions: [],
                             files: [],
@@ -531,14 +647,17 @@ const ChatAppContent = () => {
                 })
             );
 
-            // Optional: Reset lastCompletedMessage in context if possible/needed
-            // This would prevent the effect from running again for the same message.
-            // Requires adding a setter to WebSocketContext.
-            // Example: setLastCompletedMessage(null);
+            // Move the active chat to the top of the list
+            setChatHistory(prev => {
+                const updatedChat = prev.find(chat => chat.id === activeChat);
+                if (!updatedChat) return prev;
 
+                // Remove the chat and add it to the beginning
+                const otherChats = prev.filter(chat => chat.id !== activeChat);
+                return [updatedChat, ...otherChats];
+            });
         }
-    }, [lastCompletedMessage, activeChat, setChatHistory, deduplicateAndSortMessages]); // Add dependencies
-    // --- END: New useEffect ---
+    }, [lastCompletedMessage, activeChat, deduplicateAndSortMessages]);
 
     // Set mounted state
     useEffect(() => {
@@ -634,7 +753,7 @@ const ChatAppContent = () => {
                     </div>
                 </div>
 
-                {/* Messages - Always takes most of the space but ensures input stays at bottom */}
+                {/* Messages area */}
                 <div className="flex-1 flex flex-col min-h-0">
                     <MessageManager
                         currentChat={currentChat}
@@ -656,6 +775,7 @@ const ChatAppContent = () => {
                         isTyping={isTyping}
                         isUploading={fileUploadProgress !== null}
                         suggestions={inputSuggestions}
+                        aiSuggestions={chatSuggestions} // Pass AI-generated suggestions
                         onSuggestionClick={handleSuggestionClick}
                     />
                 </div>

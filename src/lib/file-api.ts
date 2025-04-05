@@ -96,21 +96,28 @@ export class FileApi {
 
             // Upload files individually for better error handling
             const results: FileUploadResponse[] = [];
+            let totalProgress = 0;
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
                 try {
-                    const response = await this.uploadFile(file, (progress) => {
+                    // Calculate the progress offset for this file
+                    const progressOffset = (i / files.length) * 100;
+                    const progressWeight = 100 / files.length;
+
+                    const response = await this.uploadFile(file, (fileProgress) => {
                         if (onProgress) {
-                            // Normalize progress across all files
-                            const overallProgress = Math.round((i * 100 + progress) / files.length);
-                            onProgress(overallProgress);
+                            // Calculate overall progress
+                            const weightedProgress = (fileProgress * progressWeight) / 100;
+                            totalProgress = progressOffset + weightedProgress;
+                            onProgress(Math.round(totalProgress));
                         }
                     });
+
                     results.push(response);
                 } catch (error) {
                     console.error(`Error uploading file ${file.name}:`, error);
-                    // Continue with other files
+                    // Continue with other files rather than failing completely
                 }
             }
 

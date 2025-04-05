@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useState, useRef, useEffect } from "react";
 import { Send, PhoneCall, Paperclip, X, File, FileText, FileImage, HelpCircle, Search, AlertTriangle, UserPlus, MessageSquare, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,7 +35,8 @@ interface ChatInputProps {
     isLoading: boolean;
     isTyping: boolean;
     isUploading?: boolean;
-    suggestions?: MessageSuggestion[];
+    suggestions?: MessageSuggestion[]; // Initial suggestions (for new chat)
+    aiSuggestions?: MessageSuggestion[]; // AI-generated suggestions
     onSuggestionClick?: (text: string) => void;
 }
 
@@ -48,6 +47,7 @@ export function ChatInput({
                               isTyping,
                               isUploading = false,
                               suggestions,
+                              aiSuggestions = [], // Default to empty array
                               onSuggestionClick
                           }: ChatInputProps) {
     const [input, setInput] = useState("");
@@ -211,7 +211,12 @@ export function ChatInput({
         };
     }, []);
 
-    // Don't disable inputs while typing - removed isTyping from disabled states
+    // Determine which suggestions to show
+    // First priority: AI suggestions from the most recent response
+    // Second priority: Initial suggestions for new chat
+    const suggestionsToShow = aiSuggestions.length > 0
+        ? aiSuggestions
+        : suggestions || [];
 
     return (
         <div
@@ -221,16 +226,16 @@ export function ChatInput({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
-            {/* Chat suggestions */}
-            {suggestions && suggestions.length > 0 && (
+            {/* Show suggestions if available */}
+            {suggestionsToShow.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2 justify-center">
-                    {suggestions.slice(0, 3).map((suggestion) => (
+                    {suggestionsToShow.slice(0, 3).map((suggestion) => (
                         <button
                             key={suggestion.id}
                             onClick={() => onSuggestionClick && onSuggestionClick(suggestion.text)}
-                            className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-sm
-                         hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors py-2 px-3 rounded-2xl
-                         text-sm flex items-center gap-1.5 max-w-xs"
+                            className={`bg-${aiSuggestions.length > 0 ? 'blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800' : 'white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'} shadow-sm
+                             hover:bg-${aiSuggestions.length > 0 ? 'blue-100 dark:hover:bg-blue-800/30' : 'gray-50 dark:hover:bg-gray-700'} transition-colors py-2 px-3 rounded-2xl
+                             text-sm flex items-center gap-1.5 max-w-xs`}
                             disabled={isLoading || isUploading || isProcessingFiles}
                         >
                             {getIconForSuggestion(suggestion)}

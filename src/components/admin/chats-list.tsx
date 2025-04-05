@@ -29,6 +29,8 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
       const fromDate = format(dateRange.from, "yyyy-MM-dd")
       const toDate = format(dateRange.to, "yyyy-MM-dd")
 
+      console.log(`Fetching chats for cluster: ${cluster}, subCluster: ${subCluster}, from: ${fromDate}, to: ${toDate}`)
+
       // Fetch chats filtered by cluster and subcluster
       const response = await adminApi.getChats(
           0, // skip
@@ -41,12 +43,24 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
 
       if (Array.isArray(response)) {
         // Handle case where API returns array directly
-        setChats(response)
-        setTotal(response.length)
+        const filteredChats = response.filter(chat => {
+          // Only show chats that belong to this subcluster
+          return chat.subcategories &&
+              chat.subcategories.includes(subCluster);
+        });
+
+        setChats(filteredChats)
+        setTotal(filteredChats.length)
       } else {
         // Handle paginated response
-        setChats(response.items)
-        setTotal(response.total)
+        const filteredChats = response.items.filter(chat => {
+          // Only show chats that belong to this subcluster
+          return chat.subcategories &&
+              chat.subcategories.includes(subCluster);
+        });
+
+        setChats(filteredChats)
+        setTotal(filteredChats.length)
       }
     } catch (error) {
       console.error("Error fetching chats:", error)
@@ -99,7 +113,7 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
   if (chats.length === 0) {
     return (
         <div className="text-center py-8">
-          <p className="text-muted-foreground">Нет чатов для данной категории в выбранный период</p>
+          <p className="text-muted-foreground">Нет чатов для подкатегории "{subCluster}" в выбранный период</p>
         </div>
     )
   }
@@ -107,7 +121,7 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
   return (
       <div className="overflow-x-auto">
         <div className="text-sm text-muted-foreground mb-2">
-          {total > 0 ? `Найдено ${total} чатов. Нажмите на чат для просмотра диалога` : 'Нет чатов для отображения'}
+          {total > 0 ? `Найдено ${total} чатов в подкатегории "${subCluster}". Нажмите на чат для просмотра диалога` : 'Нет чатов для отображения'}
         </div>
 
         {/* Desktop Table */}

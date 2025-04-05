@@ -131,10 +131,20 @@ export const adminApi = {
         }
     },
 
-    getClusterTimeseries: async (startDate: string, endDate: string): Promise<TimeseriesData[]> => {
+    getClusterTimeseries: async (
+        startDate: string,
+        endDate: string,
+        granularity: string = "hour"  // Default to hourly
+    ): Promise<TimeseriesData[]> => {
         try {
+            const params = new URLSearchParams({
+                start_date: startDate,
+                end_date: endDate,
+                granularity: granularity
+            });
+
             const res = await fetch(
-                `${API_BASE_URL}/api/admin/cluster-timeseries?start_date=${startDate}&end_date=${endDate}`,
+                `${API_BASE_URL}/api/admin/cluster-timeseries?${params.toString()}`,
                 { headers: getAuthHeaders() }
             );
 
@@ -229,11 +239,16 @@ export const adminApi = {
     },
 
     // Feedback endpoints
-    getFeedbackStats: async (fromDate?: string, toDate?: string): Promise<FeedbackStat[]> => {
+    getFeedbackStats: async (
+        fromDate?: string,
+        toDate?: string,
+        granularity: string = "hour"  // Default to hourly
+    ): Promise<FeedbackStat[]> => {
         try {
             const query = new URLSearchParams();
             if (fromDate) query.append('from', fromDate);
             if (toDate) query.append('to', toDate);
+            query.append('granularity', granularity);
 
             const queryString = query.toString() ? `?${query.toString()}` : '';
             const res = await fetch(`${API_BASE_URL}/api/admin/feedback${queryString}`, {

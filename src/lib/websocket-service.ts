@@ -25,47 +25,74 @@ export class WebSocketService {
     private reconnectInterval = 2000; // Start with 2 seconds
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
+    private connectingPromise: Promise<boolean> | null = null;
+    private connectingResolve: ((value: boolean) => void) | null = null;
 
     constructor(chatId: string, token: string) {
         this.chatId = chatId;
         this.token = token;
     }
 
-    public connect(): void {
-        try {
-            // If socket exists and is already connecting or open, don't create a new connection
-            if (this.socket && (this.socket.readyState === WebSocketState.CONNECTING ||
-                this.socket.readyState === WebSocketState.OPEN)) {
-                console.log('WebSocket connection already exists');
-                return;
-            }
-
-            // Clear any existing timers
-            this.clearTimers();
-
-            // Don't try to reconnect if max attempts reached
-            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-                this.notifyError(new Error('Maximum reconnection attempts reached'));
-                return;
-            }
-
-            console.log(`Connecting to WebSocket: ${WS_BASE_URL}/chat/${this.chatId}`);
-
-            // Create a new WebSocket
-            this.socket = new WebSocket(`${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`);
-
-            // Set up event handlers
-            this.socket.onopen = this.handleOpen.bind(this);
-            this.socket.onmessage = this.handleMessage.bind(this);
-            this.socket.onclose = this.handleClose.bind(this);
-            this.socket.onerror = this.handleError.bind(this);
-        } catch (error) {
-            console.error('Error connecting to WebSocket:', error);
-            this.notifyError(error);
-
-            // Try to reconnect after error
-            this.reconnect();
+    public connect(): Promise<boolean> {
+        // If we already have an active connecting promise, return it
+        if (this.connectingPromise) {
+            return this.connectingPromise;
         }
+
+        // Create a new promise for this connection attempt
+        this.connectingPromise = new Promise((resolve) => {
+            this.connectingResolve = resolve;
+
+            try {
+                // If socket exists and is already connecting or open, don't create a new connection
+                if (this.socket && (this.socket.readyState === WebSocketState.CONNECTING ||
+                    this.socket.readyState === WebSocketState.OPEN)) {
+                    console.log('WebSocket connection already exists');
+                    resolve(true);
+                    return;
+                }
+
+                // Clear any existing timers
+                this.clearTimers();
+
+                // Don't try to reconnect if max attempts reached
+                if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                    this.notifyError(new Error('Maximum reconnection attempts reached'));
+                    resolve(false);
+                    return;
+                }
+
+                console.log(`Connecting to WebSocket: ${WS_BASE_URL}/chat/${this.chatId}`);
+
+                // Create a new WebSocket
+                this.socket = new WebSocket(`${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`);
+
+                // Set up event handlers
+                this.socket.onopen = this.handleOpen.bind(this);
+                this.socket.onmessage = this.handleMessage.bind(this);
+                this.socket.onclose = this.handleClose.bind(this);
+                this.socket.onerror = this.handleError.bind(this);
+
+                // Set a timeout for the connection attempt
+                setTimeout(() => {
+                    if (this.connectingResolve) {
+                        console.log('WebSocket connection timeout');
+                        this.connectingResolve(false);
+                        this.connectingResolve = null;
+                        this.connectingPromise = null;
+                    }
+                }, 10000); // 10 second timeout
+            } catch (error) {
+                console.error('Error connecting to WebSocket:', error);
+                this.notifyError(error);
+
+                // Try to reconnect after error
+                this.reconnect();
+                resolve(false);
+            }
+        });
+
+        return this.connectingPromise;
     }
 
     public disconnect(): void {
@@ -73,6 +100,10 @@ export class WebSocketService {
             this.socket.close();
         }
         this.clearTimers();
+
+        // Clear the connecting promise
+        this.connectingPromise = null;
+        this.connectingResolve = null;
     }
 
     public addMessageListener(listener: MessageListener): void {
@@ -194,6 +225,15 @@ export class WebSocketService {
 
         // Notify listeners
         this.connectionListeners.forEach(listener => listener());
+
+        // Resolve the connecting promise
+        if (this.connectingResolve) {
+            this.connectingResolve(true);
+            this.connectingResolve = null;
+        }
+
+        // Clear the promise after successful connection
+        this.connectingPromise = null;
     }
 
     private handleMessage(event: MessageEvent): void {

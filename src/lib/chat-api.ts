@@ -54,12 +54,15 @@ export class ChatApi {
             if (response && response.items) {
                 response.items = response.items.map(msg => {
                     // Normalize message_type for consistent comparison
-                    if (msg.message_type === 'user' || msg.message_type === 'USER') {
-                        msg.message_type = MessageType.USER;
-                    } else if (msg.message_type === 'ai' || msg.message_type === 'AI') {
-                        msg.message_type = MessageType.AI;
-                    } else if (msg.message_type === 'system' || msg.message_type === 'SYSTEM') {
-                        msg.message_type = MessageType.SYSTEM;
+                    if (typeof msg.message_type === 'string') {
+                        const msgType = msg.message_type.toLowerCase();
+                        if (msgType === 'user') {
+                            msg.message_type = MessageType.USER;
+                        } else if (msgType === 'ai') {
+                            msg.message_type = MessageType.AI;
+                        } else if (msgType === 'system') {
+                            msg.message_type = MessageType.SYSTEM;
+                        }
                     }
                     return msg;
                 });
@@ -85,12 +88,15 @@ export class ChatApi {
             console.log(`Message sent successfully to chat ${chatId}, response:`, response);
 
             // Normalize message_type
-            if (response.message_type === 'user' || response.message_type === 'USER') {
-                response.message_type = MessageType.USER;
-            } else if (response.message_type === 'ai' || response.message_type === 'AI') {
-                response.message_type = MessageType.AI;
-            } else if (response.message_type === 'system' || response.message_type === 'SYSTEM') {
-                response.message_type = MessageType.SYSTEM;
+            if (typeof response.message_type === 'string') {
+                const msgType = response.message_type.toLowerCase();
+                if (msgType === 'user') {
+                    response.message_type = MessageType.USER;
+                } else if (msgType === 'ai') {
+                    response.message_type = MessageType.AI;
+                } else if (msgType === 'system') {
+                    response.message_type = MessageType.SYSTEM;
+                }
             }
 
             return response;
@@ -121,37 +127,35 @@ export class ChatApi {
 
             console.log(`Sending system message to chat ${chatId}:`, data);
 
-            // First try the dedicated system message endpoint
             try {
+                // First try the dedicated system message endpoint
                 const response = await ApiService.post<ChatMessage>(
                     `/chats/${chatId}/system-messages`,
                     data
                 );
                 console.log(`System message sent successfully to chat ${chatId}:`, response);
                 return response;
-            } catch (error) {
-                console.warn(`Dedicated system message endpoint failed, trying fallback for chat ${chatId}:`, error);
+            } catch (endpointError) {
+                console.warn(`System message endpoint failed, trying fallback for chat ${chatId}:`, endpointError);
 
-                // If dedicated endpoint fails, try the app-specific endpoint (NextJS API route)
-                const response = await fetch(`/api/chats/${chatId}/system-messages`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${localStorage.getItem('jwt_token')}`
-                    },
-                    body: JSON.stringify(data)
-                });
+                // If dedicated endpoint fails, create a generic message with SYSTEM type
+                const fallbackData = {
+                    content: data.content,
+                    message_type: MessageType.SYSTEM
+                };
 
-                if (!response.ok) {
-                    throw new Error(`Failed to send system message: ${response.statusText}`);
-                }
+                const response = await ApiService.post<ChatMessage>(
+                    `/chats/${chatId}/messages`,
+                    fallbackData
+                );
 
-                return await response.json();
+                console.log(`Fallback system message sent successfully to chat ${chatId}:`, response);
+                return response;
             }
         } catch (error) {
             console.error(`Error sending system message to chat ${chatId}:`, error);
 
-            // Return a client-side constructed message as last resort
+            // Create a client-side system message as last resort
             return {
                 id: `system-${Date.now()}`,
                 chat_id: chatId,
@@ -173,14 +177,18 @@ export class ChatApi {
         reaction: ReactionCreate
     ): Promise<void> {
         try {
-            // Important: Convert the reaction_type to lowercase to match server expectations
-            const lowercaseReaction = {
-                reaction_type: reaction.reaction_type.toLowerCase()
+            // Convert the reaction_type to proper case (like/dislike)
+            const reactionTypeLower = reaction.reaction_type.toLowerCase();
+
+            // Standardize to lowercase for API
+            const standardizedReaction = {
+                reaction_type: reactionTypeLower === 'like' || reactionTypeLower === 'dislike' ?
+                    reactionTypeLower : 'like' // Default to 'like' if invalid
             };
 
             await ApiService.post<void>(
                 `/chats/${chatId}/messages/${messageId}/reaction`,
-                lowercaseReaction
+                standardizedReaction
             );
         } catch (error) {
             console.error(`Error adding reaction to message ${messageId}:`, error);
