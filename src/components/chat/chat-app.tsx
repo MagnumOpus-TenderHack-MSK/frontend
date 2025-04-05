@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Menu, X, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,7 @@ import {
     MessageSuggestion,
     ReactionType,
     FileType,
+    MessageStatus,
 } from "@/lib/types";
 import { ChatApi } from "@/lib/chat-api";
 import { FileApi } from "@/lib/file-api";
@@ -36,7 +37,8 @@ const ChatAppContent = () => {
         connectWebSocket,
         isTyping,
         pendingMessageId,
-        streamedContent
+        streamedContent,
+        lastCompletedMessage,
     } = useWebSocket();
 
     const [mounted, setMounted] = useState(false);
@@ -225,6 +227,23 @@ const ChatAppContent = () => {
         }
     };
 
+    const deduplicateAndSortMessages = useCallback((messages: ChatMessage[] = []) => {
+        const uniqueMessages = new Map<string, ChatMessage>();
+        messages.forEach(message => {
+            // Prioritize non-temporary messages if IDs match (or content/type match)
+            const existing = uniqueMessages.get(message.id);
+            if (!existing || !existing.id.startsWith('temp-')) {
+                 uniqueMessages.set(message.id, message);
+            } else if (existing && existing.id.startsWith('temp-') && !message.id.startsWith('temp-')) {
+                 // Replace temp message with real message if real one arrives
+                 uniqueMessages.set(message.id, message);
+            }
+        });
+        return Array.from(uniqueMessages.values()).sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+    }, []);
+
     const sendMessageToChat = async (
         chatId: string,
         content: string,
@@ -238,31 +257,18 @@ const ChatAppContent = () => {
                 chat_id: chatId,
                 content,
                 message_type: "USER",
-                status: "COMPLETED",
+                status: MessageStatus.COMPLETED,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
                 files: fileReferences.length > 0 ? fileReferences : undefined,
             };
 
-            // Helper function to deduplicate messages
-            const deduplicateMessages = (messages: ChatMessage[] = []) => {
-                const uniqueMessages = new Map<string, ChatMessage>();
-                messages.forEach(message => {
-                    // Don't override server messages with temp ones
-                    if (message.id.startsWith('temp-') && uniqueMessages.has(message.id)) {
-                        return;
-                    }
-                    uniqueMessages.set(message.id, message);
-                });
-                return Array.from(uniqueMessages.values());
-            };
-
             setChatHistory((prev) =>
                 prev.map((chat) => {
                     if (chat.id === chatId) {
-                        // Deduplicate messages to prevent doubles
                         const existingMessages = chat.messages || [];
-                        const updatedMessages = deduplicateMessages([...existingMessages, optimisticMessage]);
+                        // Use the shared helper function
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, optimisticMessage]);
 
                         const updatedChat = {
                             ...chat,
@@ -287,7 +293,7 @@ const ChatAppContent = () => {
             });
         } catch (error) {
             console.error(`Error sending message to chat ${chatId}:`, error);
-            throw error;
+            throw error; // Rethrow error to be caught by handleSendMessage
         }
     };
 
@@ -474,20 +480,65 @@ const ChatAppContent = () => {
         if (user) {
             loadChats();
         }
-    }, [user]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user]); // Keep dependencies minimal if loadChats is stable
 
     // Load chat and connect to WebSocket when activeChat changes
     useEffect(() => {
         if (activeChat) {
-            // Debounce the connection to prevent rapid reconnections
             const timer = setTimeout(() => {
                 loadChat(activeChat);
                 connectWebSocket(activeChat);
-            }, 300);
+            }, 300); // Debounce
 
             return () => clearTimeout(timer);
         }
-    }, [activeChat]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeChat]); // Keep dependencies minimal if functions are stable
+
+    // --- START: New useEffect for handling completed AI messages ---
+    useEffect(() => {
+        if (lastCompletedMessage && activeChat) {
+            console.log("Processing completed message:", lastCompletedMessage.id);
+            setChatHistory((prevHistory) =>
+                prevHistory.map((chat) => {
+                    if (chat.id === activeChat) {
+                        const existingMessages = chat.messages || [];
+                        const newMessage: ChatMessage = {
+                            id: lastCompletedMessage.id, // Use the real ID
+                            chat_id: activeChat,
+                            content: lastCompletedMessage.content,
+                            message_type: "ai", // Assuming AI response
+                            status: MessageStatus.COMPLETED, // Mark as completed
+                            created_at: new Date().toISOString(), // Ideally use server timestamp if available
+                            updated_at: new Date().toISOString(),
+                            // Initialize potentially missing fields
+                            sources: [],
+                            reactions: [],
+                            files: [],
+                        };
+
+                        // Add/Update the message using the helper function
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, newMessage]);
+
+                        return {
+                            ...chat,
+                            messages: updatedMessages,
+                            updated_at: new Date().toISOString(),
+                        };
+                    }
+                    return chat;
+                })
+            );
+
+            // Optional: Reset lastCompletedMessage in context if possible/needed
+            // This would prevent the effect from running again for the same message.
+            // Requires adding a setter to WebSocketContext.
+            // Example: setLastCompletedMessage(null);
+
+        }
+    }, [lastCompletedMessage, activeChat, setChatHistory, deduplicateAndSortMessages]); // Add dependencies
+    // --- END: New useEffect ---
 
     // Set mounted state
     useEffect(() => {

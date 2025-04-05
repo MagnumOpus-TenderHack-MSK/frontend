@@ -140,17 +140,16 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                 />
             ))}
 
-            {/* Always render the pending message if it exists.
-          Its status reflects whether it's still in progress or completed. */}
-            {pendingMessageId && (
+            {/* Render the pending message ONLY if it's actively typing AND not already in renderedMessages */}
+            {isTyping && pendingMessageId && !renderedMessages.some(msg => msg.id === pendingMessageId) && (
                 <ChatMessage
                     key={`pending-${pendingMessageId}`}
                     message={{
                         id: pendingMessageId,
-                        chat_id: currentChat.id,
+                        chat_id: currentChat.id, // Ensure currentChat is not null here
                         content: streamedContent || "",
                         message_type: 'ai',
-                        status: isTyping ? MessageStatus.PROCESSING : MessageStatus.COMPLETED,
+                        status: MessageStatus.PROCESSING, // It's always processing if rendered here
                         created_at: new Date().toISOString(),
                         updated_at: new Date().toISOString(),
                     }}
