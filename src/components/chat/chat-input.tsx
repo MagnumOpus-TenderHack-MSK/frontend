@@ -227,8 +227,8 @@ export function ChatInput({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
-            {/* Show suggestions if available */}
-            {suggestionsToShow.length > 0 && (
+            {/* Show suggestions if available AND AI is not typing */}
+            {suggestionsToShow.length > 0 && !isTyping && (
                 <div className="mb-3 flex flex-wrap gap-2 justify-center">
                     {suggestionsToShow.slice(0, 3).map((suggestion) => (
                         <SuggestionButton
@@ -236,7 +236,7 @@ export function ChatInput({
                             suggestion={suggestion}
                             onClick={onSuggestionClick}
                             isAiSuggestion={aiSuggestions.length > 0}
-                            disabled={isLoading || isUploading || isProcessingFiles}
+                            disabled={isLoading || isUploading || isProcessingFiles || isTyping}
                         />
                     ))}
                 </div>
@@ -320,7 +320,7 @@ export function ChatInput({
                         className={`w-full rounded-md border border-input bg-background px-4 py-2 pr-10 focus:outline-none focus:ring-2 focus:ring-primary ${
                             dragActive ? 'border-blue-400 dark:border-blue-500' : ''
                         }`}
-                        disabled={isLoading || isUploading || isProcessingFiles}
+                        disabled={isLoading || isUploading || isProcessingFiles || isTyping}
                     />
                 </div>
 
@@ -331,7 +331,7 @@ export function ChatInput({
                     onChange={handleFileChange}
                     className="hidden"
                     multiple
-                    disabled={isLoading || isUploading || isProcessingFiles}
+                    disabled={isLoading || isUploading || isProcessingFiles || isTyping}
                 />
 
                 {/* File attachment button */}
@@ -339,7 +339,7 @@ export function ChatInput({
                     type="button"
                     variant="outline"
                     onClick={triggerFileInput}
-                    disabled={isLoading || isUploading || isProcessingFiles}
+                    disabled={isLoading || isUploading || isProcessingFiles || isTyping}
                     className="transition-all duration-200 hover:scale-105"
                     title="Прикрепить файл"
                 >
@@ -352,7 +352,7 @@ export function ChatInput({
 
                 <Button
                     type="submit"
-                    disabled={isLoading || isUploading || isProcessingFiles || (!input.trim() && files.length === 0)}
+                    disabled={isLoading || isUploading || isProcessingFiles || (!input.trim() && files.length === 0) || isTyping}
                     className="transition-all duration-200 hover:scale-105"
                 >
                     <Send size={18} />
@@ -362,7 +362,7 @@ export function ChatInput({
                     type="button"
                     variant="support"
                     onClick={onRequestSupport}
-                    disabled={isLoading || isUploading || isProcessingFiles}
+                    disabled={isLoading || isUploading || isProcessingFiles || isTyping}
                     className="transition-all duration-200 hover:scale-105"
                     title="Связаться с оператором"
                 >
