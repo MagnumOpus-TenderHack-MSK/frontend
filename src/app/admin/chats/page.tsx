@@ -7,62 +7,83 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { AdminHeader } from "@/components/admin/admin-header";
 import { DateRangePicker } from "@/components/admin/date-range-picker";
-import { adminApi, AdminChat } from "@/lib/admin-api";
+import { adminApi, AdminChat } from "@/lib/admin-api"; // Use AdminChat type
 import { format } from "date-fns";
 import { ThumbsUp, ThumbsDown } from "lucide-react";
+import { addDays } from "date-fns"; // Import addDays
 
 export default function AdminChatsPage() {
   const router = useRouter();
-  const [chats, setChats] = useState<AdminChat[]>([]);
+  const [chats, setChats] = useState<AdminChat[]>([]); // Use AdminChat type
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(0);
   const [dateRange, setDateRange] = useState({
-    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+    from: addDays(new Date(), -30), // Default last 30 days
     to: new Date(),
   });
+  const [error, setError] = useState<string | null>(null);
 
   const pageSize = 10;
 
   useEffect(() => {
     const fetchChats = async () => {
       setIsLoading(true);
+      setError(null); // Reset error on new fetch
       try {
-        // Format dates for API
-        const fromDate = format(dateRange.from, "yyyy-MM-dd");
-        const toDate = format(dateRange.to, "yyyy-MM-dd");
+        const fromDate = dateRange.from ? format(dateRange.from, "yyyy-MM-dd") : undefined;
+        const toDate = dateRange.to ? format(dateRange.to, "yyyy-MM-dd") : undefined;
 
         const response = await adminApi.getChats(
             currentPage * pageSize,
             pageSize,
-            undefined,
-            undefined,
+            undefined, // No cluster filter on this page
+            undefined, // No subCluster filter on this page
             fromDate,
             toDate
         );
 
-        setChats(response.items);
-        setTotal(response.total);
-      } catch (error) {
+        if (response && typeof response.total === 'number' && Array.isArray(response.items)) {
+          setChats(response.items);
+          setTotal(response.total);
+        } else {
+          console.warn("Unexpected API response structure for all chats:", response);
+          setChats([]);
+          setTotal(0);
+          setError("Invalid data received from server");
+        }
+
+      } catch (error: any) {
         console.error("Error fetching admin chats:", error);
+        setError(error.message || "Failed to load chats");
+        setChats([]);
+        setTotal(0);
       } finally {
         setIsLoading(false);
       }
     };
 
     fetchChats();
-  }, [currentPage, dateRange]);
+  }, [currentPage, dateRange]); // Rerun effect when page or date range changes
 
   const handleViewChat = (chatId: string) => {
     router.push(`/admin/chats/${chatId}`);
   };
 
-  const formatDate = (dateString: string) => {
+  const formatDateSafe = (dateString: string | undefined) => {
+    if (!dateString) return "Неизвестно";
     try {
       return format(new Date(dateString), "dd.MM.yyyy HH:mm");
     } catch (e) {
-      return dateString;
+      return dateString; // Return original if formatting fails
     }
+  };
+
+  // Helper function to safely display user information
+  const getUserDisplay = (user: AdminChat['user']): string => {
+    if (!user) return "Неизвестно";
+    if (typeof user === 'string') return user; // Handle case where user is just a string/ID
+    return user.username || user.email || "Неизвестно"; // Prioritize username, fallback to email
   };
 
   const totalPages = Math.ceil(total / pageSize);
@@ -80,10 +101,12 @@ export default function AdminChatsPage() {
           </div>
 
           <div className="text-sm text-muted-foreground mb-4">
-            {total > 0 ? (
-                `Найдено ${total} чатов. Нажмите на чат для просмотра диалога`
+            {isLoading ? "Загрузка..." : error ? (
+                <span className="text-red-500">{error}</span>
+            ) : total > 0 ? (
+                `Найдено ${total} чатов. Нажмите на чат для просмотра диалога.`
             ) : (
-                isLoading ? "Загрузка..." : "Нет чатов для отображения"
+                "Нет чатов для отображения в выбранный период."
             )}
           </div>
 
@@ -95,7 +118,7 @@ export default function AdminChatsPage() {
                       <Skeleton key={i} className="w-full h-12" />
                   ))}
                 </div>
-            ) : (
+            ) : chats.length > 0 ? ( // Render table only if there are chats
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-muted/50 dark:hover:bg-muted/50">
@@ -115,21 +138,22 @@ export default function AdminChatsPage() {
                             className="cursor-pointer hover:bg-muted/50 dark:hover:bg-muted/50"
                             onClick={() => handleViewChat(chat.id)}
                         >
-                          <TableCell className="font-medium">{chat.title}</TableCell>
-                          <TableCell>{chat.user}</TableCell>
-                          <TableCell>{chat.categories.join(", ")}</TableCell>
-                          <TableCell>{formatDate(chat.created_at)}</TableCell>
-                          <TableCell>{formatDate(chat.updated_at)}</TableCell>
-                          <TableCell>{chat.message_count}</TableCell>
+                          <TableCell className="font-medium">{chat.title || "Без заголовка"}</TableCell>
+                          {/* Use helper function to display user */}
+                          <TableCell>{getUserDisplay(chat.user)}</TableCell>
+                          <TableCell>{chat.categories?.join(", ") || "Нет"}</TableCell>
+                          <TableCell>{formatDateSafe(chat.created_at)}</TableCell>
+                          <TableCell>{formatDateSafe(chat.updated_at)}</TableCell>
+                          <TableCell>{chat.message_count ?? 0}</TableCell>
                           <TableCell>
                             <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
                           <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
-                          {chat.likes}
+                          {chat.likes ?? 0}
                         </span>
                               <span className="flex items-center gap-1">
                           <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
-                                {chat.dislikes}
+                                {chat.dislikes ?? 0}
                         </span>
                             </div>
                           </TableCell>
@@ -137,7 +161,7 @@ export default function AdminChatsPage() {
                     ))}
                   </TableBody>
                 </Table>
-            )}
+            ) : null /* Don't render table if no chats */ }
           </div>
 
           {/* Mobile view */}
@@ -153,26 +177,30 @@ export default function AdminChatsPage() {
                         className="border dark:border-gray-700 rounded-lg p-4 cursor-pointer hover:bg-muted/50"
                         onClick={() => handleViewChat(chat.id)}
                     >
-                      <h3 className="font-medium mb-2">{chat.title}</h3>
+                      <h3 className="font-medium mb-2">{chat.title || "Без заголовка"}</h3>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                         <div className="text-muted-foreground">Пользователь:</div>
-                        <div className="truncate">{chat.user}</div>
+                        {/* Use helper function to display user */}
+                        <div className="truncate">{getUserDisplay(chat.user)}</div>
+
+                        <div className="text-muted-foreground">Категории:</div>
+                        <div className="truncate">{chat.categories?.join(", ") || "Нет"}</div>
 
                         <div className="text-muted-foreground">Создан:</div>
-                        <div>{formatDate(chat.created_at)}</div>
+                        <div>{formatDateSafe(chat.created_at)}</div>
 
                         <div className="text-muted-foreground">Сообщений:</div>
-                        <div>{chat.message_count}</div>
+                        <div>{chat.message_count ?? 0}</div>
 
                         <div className="text-muted-foreground">Оценка:</div>
                         <div className="flex items-center gap-3">
                     <span className="flex items-center gap-1">
                       <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
-                      {chat.likes}
+                      {chat.likes ?? 0}
                     </span>
                           <span className="flex items-center gap-1">
                       <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
-                            {chat.dislikes}
+                            {chat.dislikes ?? 0}
                     </span>
                         </div>
                       </div>
@@ -182,50 +210,27 @@ export default function AdminChatsPage() {
           </div>
 
           {/* Pagination */}
-          {totalPages > 1 && (
+          {totalPages > 1 && !isLoading && ( // Hide pagination during loading
               <div className="flex justify-center mt-6">
                 <div className="flex gap-2">
                   <Button
                       variant="outline"
                       size="sm"
                       onClick={() => setCurrentPage(Math.max(0, currentPage - 1))}
-                      disabled={currentPage === 0 || isLoading}
+                      disabled={currentPage === 0}
                   >
                     Предыдущая
                   </Button>
 
-                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                    // Show pages around current page
-                    let pageNum = currentPage;
-                    if (currentPage < 2) {
-                      pageNum = i;
-                    } else if (currentPage > totalPages - 3) {
-                      pageNum = totalPages - 5 + i;
-                    } else {
-                      pageNum = currentPage - 2 + i;
-                    }
-
-                    if (pageNum >= 0 && pageNum < totalPages) {
-                      return (
-                          <Button
-                              key={pageNum}
-                              variant={currentPage === pageNum ? "default" : "outline"}
-                              size="sm"
-                              onClick={() => setCurrentPage(pageNum)}
-                              disabled={isLoading}
-                          >
-                            {pageNum + 1}
-                          </Button>
-                      );
-                    }
-                    return null;
-                  })}
+                  <span className="text-sm p-2">
+                 Стр. {currentPage + 1} из {totalPages}
+               </span>
 
                   <Button
                       variant="outline"
                       size="sm"
                       onClick={() => setCurrentPage(Math.min(totalPages - 1, currentPage + 1))}
-                      disabled={currentPage === totalPages - 1 || isLoading}
+                      disabled={currentPage === totalPages - 1}
                   >
                     Следующая
                   </Button>

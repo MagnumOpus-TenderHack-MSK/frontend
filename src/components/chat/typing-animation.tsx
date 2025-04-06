@@ -12,7 +12,7 @@ interface TypingAnimationProps {
 export const TypingAnimation: React.FC<TypingAnimationProps> = ({
                                                                     content,
                                                                     isCompleted,
-                                                                    speed = 70,
+                                                                    speed = 150,  // Increased from 70 to 150
                                                                     initialDelay = 0,
                                                                     onComplete
                                                                 }) => {
@@ -26,11 +26,6 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
     const initialDelayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const hasCalledOnCompleteRef = useRef(false);
 
-    // Debug logging helper
-    const logDebug = (message: string) => {
-        console.log(`[TypingAnimation] ${message}`);
-    };
-
     // Simple animation function that steps through the text
     const animate = () => {
         // If we've typed all available content, stop animation
@@ -43,8 +38,8 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
             return;
         }
 
-        // Calculate how many characters to type in this frame
-        const charsToAdd = Math.max(1, Math.floor(speed / 100));
+        // Calculate how many characters to type in this frame - increased for faster typing
+        const charsToAdd = Math.max(2, Math.floor(speed / 60));
 
         // Update the displayed text to include more characters
         const newPosition = Math.min(typingPositionRef.current + charsToAdd, contentRef.current.length);
@@ -65,8 +60,6 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
 
         // If content has changed (new chunks arrived)
         if (content.length > typingPositionRef.current) {
-            logDebug(`Content updated: ${content.length} chars (currently at position ${typingPositionRef.current})`);
-
             // If no animation is running, start one
             if (!animationFrameRef.current) {
                 // If this is initial content, apply initialDelay
@@ -89,8 +82,6 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
     // Handle completion state changes
     useEffect(() => {
         if (isCompleted) {
-            logDebug(`Message marked as complete, text length: ${displayedText.length}, content length: ${content.length}`);
-
             // If we haven't shown all text yet, show the full content immediately
             if (typingPositionRef.current < content.length) {
                 setDisplayedText(content);
@@ -109,7 +100,7 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
                 }
             }
         }
-    }, [isCompleted, content, onComplete, displayedText.length]);
+    }, [isCompleted, content, onComplete]);
 
     // Clean up on unmount
     useEffect(() => {
@@ -126,7 +117,7 @@ export const TypingAnimation: React.FC<TypingAnimationProps> = ({
         };
     }, []);
 
-    // Always render the displayed text, even if empty (fixed from previous version)
+    // Always render the displayed text, even if empty
     return (
         <div className="message-content">
             {displayedText && <MarkdownRenderer content={displayedText} />}

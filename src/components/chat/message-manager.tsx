@@ -1,13 +1,16 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { ChatMessage } from '@/components/chat/chat-message';
 import { ChatSuggestions } from '@/components/chat/chat-suggestions';
+import TypingLoader from '@/components/chat/typing-loader'; // Use the loader component
 import { Chat, ChatMessage as ChatMessageType, MessageStatus } from '@/lib/types';
 import { useWebSocket } from '@/contexts/websocket-context';
+import { ArrowDownCircle } from 'lucide-react'; // Icon for scroll button
 
 interface MessageManagerProps {
     currentChat: Chat | null;
-    isLoadingChats: boolean;
-    isTyping: boolean;
+    isLoadingChats: boolean; // Loading chat list or initial messages
+    isTyping: boolean; // Actively receiving chunks
+    expectingAiResponse: boolean; // Waiting for the first chunk
     pendingMessageId: string | null;
     streamedContent: string;
     onMessageReaction: (messageId: string, reaction: 'like' | 'dislike') => void;
@@ -18,6 +21,7 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                                                                   currentChat,
                                                                   isLoadingChats,
                                                                   isTyping,
+                                                                  expectingAiResponse, // Receive the new state
                                                                   pendingMessageId,
                                                                   streamedContent,
                                                                   onMessageReaction,
@@ -26,31 +30,22 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const [renderedMessages, setRenderedMessages] = useState<ChatMessageType[]>([]);
-    const [shouldScrollToBottom, setShouldScrollToBottom] = useState(true);
     const [isNearBottom, setIsNearBottom] = useState(true);
-    const lastScrollPositionRef = useRef<number>(0);
+    const [userScrolledUp, setUserScrolledUp] = useState(false); // Track if user initiated scroll up
     const previousChatIdRef = useRef<string | null>(null);
 
-    // Access checkForCompletedMessages from WebSocket context
+    // Access message completion checker from context (if still needed)
     const { checkForCompletedMessages } = useWebSocket();
 
-    // Deduplicate messages based on their IDs and content (Ensure this matches ChatAppContent)
+    // Shared message deduplication and sorting logic
     const deduplicateAndSortMessages = useCallback((messages: ChatMessageType[] = []) => {
         const uniqueMessages = new Map<string, ChatMessageType>();
         messages.forEach(newMessage => {
             const existingMessage = uniqueMessages.get(newMessage.id);
-
-            if (!existingMessage) {
-                // If no message with this ID exists, add the new one
+            if (!existingMessage || !newMessage.id.startsWith('temp-') || (newMessage.content && newMessage.content !== existingMessage.content)) {
                 uniqueMessages.set(newMessage.id, newMessage);
-            } else {
-                // If a message with this ID exists...
-                // Only replace the existing message if the new message is NOT temporary.
-                // This ensures a 'real' message always overwrites a 'temporary' one.
-                if (!newMessage.id.startsWith('temp-')) {
-                     uniqueMessages.set(newMessage.id, newMessage);
-                }
-                // If newMessage IS temporary, we implicitly keep the existing one.
+            } else if (!uniqueMessages.has(newMessage.id)) {
+                uniqueMessages.set(newMessage.id, existingMessage);
             }
         });
         return Array.from(uniqueMessages.values()).sort(
@@ -58,85 +53,86 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
         );
     }, []);
 
-    // Periodically check for incomplete messages and force completion if needed
+    // Update rendered messages when the current chat's messages change
     useEffect(() => {
-        const checkInterval = setInterval(() => {
-            if (isTyping && pendingMessageId) {
-                checkForCompletedMessages();
-            }
-        }, 5000);
-        return () => clearInterval(checkInterval);
-    }, [isTyping, pendingMessageId, checkForCompletedMessages]);
-
-    // Update rendered messages when currentChat changes
-    useEffect(() => {
-        if (currentChat?.messages) {
+        if (currentChat) {
             const chatId = currentChat.id;
-
-            // Check if we switched to a new chat
+            // Reset scroll behavior when switching chats
             if (previousChatIdRef.current !== chatId) {
-                setShouldScrollToBottom(true);
+                setUserScrolledUp(false); // Reset user scroll state on chat change
                 previousChatIdRef.current = chatId;
+                // Force scroll to bottom when switching to a new chat
+                setTimeout(() => {
+                    messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }); // Use 'auto' for instant scroll on chat switch
+                    setIsNearBottom(true);
+                }, 0);
             }
-
-            // Process and deduplicate messages using the unified function
             const deduped = deduplicateAndSortMessages(currentChat.messages);
             setRenderedMessages(deduped);
         } else {
-            // Critical fix: ensure we reset messages when no currentChat
             setRenderedMessages([]);
+            previousChatIdRef.current = null;
+            setUserScrolledUp(false); // Reset on no chat
         }
-    }, [currentChat, deduplicateAndSortMessages]);
+    }, [currentChat, deduplicateAndSortMessages]); // Dependency: currentChat object
 
-    // Detect scroll events to update "near bottom" status
+    // Handle scrolling behavior
     useEffect(() => {
-        const handleScroll = () => {
-            if (!containerRef.current) return;
-            const container = containerRef.current;
-            lastScrollPositionRef.current = container.scrollTop;
-            const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 200;
-            setIsNearBottom(isAtBottom);
+        const container = containerRef.current;
+        if (!container) return;
+        let scrollTimeout: NodeJS.Timeout | null = null;
 
-            // Only update scroll behavior if it changed
-            if (isAtBottom !== shouldScrollToBottom) {
-                setShouldScrollToBottom(isAtBottom);
-            }
+        const handleScroll = () => {
+            // Debounce scroll checks slightly
+            if (scrollTimeout) clearTimeout(scrollTimeout);
+            scrollTimeout = setTimeout(() => {
+                const scrollThreshold = 200; // Pixels from bottom
+                const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < scrollThreshold;
+                setIsNearBottom(atBottom);
+                // Detect if user explicitly scrolled up
+                if (!atBottom && container.scrollTop < container.scrollHeight - container.clientHeight - scrollThreshold * 1.5) {
+                    setUserScrolledUp(true);
+                } else if (atBottom) {
+                    setUserScrolledUp(false); // Reset if user scrolls back down
+                }
+            }, 100); // Debounce time
         };
 
-        const container = containerRef.current;
-        if (container) {
-            container.addEventListener('scroll', handleScroll);
-            return () => container.removeEventListener('scroll', handleScroll);
-        }
-    }, [shouldScrollToBottom]);
+        container.addEventListener('scroll', handleScroll, { passive: true });
+        // Initial check
+        handleScroll();
 
-    // Scroll to bottom when messages update or new content arrives
+        return () => {
+            container.removeEventListener('scroll', handleScroll);
+            if (scrollTimeout) clearTimeout(scrollTimeout);
+        };
+    }, []); // No dependency needed here?
+
+    // Auto-scroll logic
     useEffect(() => {
-        if ((shouldScrollToBottom || isTyping) && messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        }
-    }, [renderedMessages, isTyping, streamedContent, shouldScrollToBottom]);
+        // Auto-scroll if the user hasn't scrolled up OR if the AI just started typing/expecting
+        const shouldAutoScroll = !userScrolledUp || isTyping || expectingAiResponse;
 
-    // Always scroll to bottom when typing begins
-    useEffect(() => {
-        if (isTyping && messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        if (shouldAutoScroll && messagesEndRef.current) {
+            requestAnimationFrame(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            });
         }
-    }, [isTyping]);
+    }, [renderedMessages, isTyping, expectingAiResponse, userScrolledUp]); // Dependencies
 
+    // Manual scroll to bottom button handler
     const handleScrollToBottom = () => {
         if (messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-            setShouldScrollToBottom(true);
+            messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            setUserScrolledUp(false); // Allow auto-scroll again
         }
     };
 
-    // Critical fix: Only render suggestions if there are no messages (empty chat)
-    // This differentiation ensures we don't show messages from other chats
-    const isEmptyChat = !currentChat || (!renderedMessages.length && !pendingMessageId && !isTyping);
+    // Determine if the chat is effectively empty (for showing suggestions)
+    const isEmptyChat = !currentChat || (!renderedMessages.length && !pendingMessageId && !isTyping && !expectingAiResponse);
 
-    // If we have a currentChat but no messages are loaded yet, show a loading state
-    if (currentChat && isLoadingChats && !renderedMessages.length && !pendingMessageId) {
+    // Show loading skeleton if chat list/initial messages are loading
+    if (isLoadingChats && !currentChat) {
         return (
             <div className="flex-1 overflow-y-auto flex items-center justify-center p-4" ref={containerRef}>
                 <div className="animate-pulse text-center">
@@ -148,57 +144,50 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     }
 
     return (
-        <div className="flex-1 overflow-y-auto p-4 space-y-2 relative" ref={containerRef}>
-            {/* Render the chat suggestions only if it's an empty chat */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2 relative scroll-smooth" ref={containerRef}>
+
+            {/* Render initial suggestions only if the chat is truly empty */}
             {isEmptyChat && (
                 <ChatSuggestions onSuggestionClick={onSuggestionClick} />
             )}
 
-            {/* Only render messages if we have a current chat and messages */}
-            {currentChat && renderedMessages.map((message) => (
-                <ChatMessage
-                    key={message.id}
-                    message={message}
-                    onReaction={onMessageReaction}
-                    isTyping={false} // Normal messages are not typing
-                />
-            ))}
+            {/* Render existing messages */}
+            {renderedMessages.map((message) => {
+                // Determine if this message is the one currently being typed
+                const isCurrentlyTypingMessage = isTyping && message.id === pendingMessageId;
 
-            {/* Render the pending message ONLY if it's actively typing AND not already in renderedMessages */}
-            {isTyping && pendingMessageId && !renderedMessages.some(msg => msg.id === pendingMessageId) && (
-                <ChatMessage
-                    key={`pending-${pendingMessageId}`}
-                    message={{
-                        id: pendingMessageId,
-                        chat_id: currentChat!.id,
-                        content: streamedContent || "",
-                        message_type: 'ai',
-                        status: MessageStatus.PROCESSING,
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString(),
-                    }}
-                    isTyping={isTyping}
-                    typingContent={streamedContent}
-                    onReaction={onMessageReaction}
-                />
+                return (
+                    <ChatMessage
+                        key={message.id}
+                        message={message}
+                        onReaction={onMessageReaction}
+                        // Pass isTyping=true ONLY for the specific message being streamed
+                        isTyping={isCurrentlyTypingMessage}
+                        // Pass streamedContent only to the message being typed
+                        typingContent={isCurrentlyTypingMessage ? streamedContent : ""}
+                    />
+                );
+            })}
+
+            {/* Render Typing Loader only when expecting response and not yet typing */}
+            {expectingAiResponse && !isTyping && !pendingMessageId && (
+                <TypingLoader />
             )}
 
-            {/* Show a "scroll to bottom" button if the user has scrolled up */}
-            {!isNearBottom && (
+            {/* Scroll to bottom button (Show when user has scrolled up) */}
+            {userScrolledUp && !isNearBottom && (
                 <button
                     onClick={handleScrollToBottom}
-                    className="fixed bottom-24 right-6 bg-primary text-white rounded-full p-3 shadow-lg hover:bg-primary/90 transition-opacity opacity-80 hover:opacity-100"
+                    className="fixed bottom-24 right-6 z-10 bg-primary text-primary-foreground rounded-full p-3 shadow-lg hover:bg-primary/90 transition-opacity duration-300 opacity-80 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 animate-bounce" // Added bounce animation
                     aria-label="Scroll to bottom"
+                    title="К последним сообщениям"
                 >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"
-                         viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
+                    <ArrowDownCircle size={24} /> {/* Larger icon */}
                 </button>
             )}
 
-            <div ref={messagesEndRef} />
+            {/* Anchor element to scroll to */}
+            <div ref={messagesEndRef} style={{ height: '1px' }} />
         </div>
     );
 };

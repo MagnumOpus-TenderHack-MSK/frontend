@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,23 +12,44 @@ import { ChatsList } from "@/components/admin/chats-list"
 import { AdminHeader } from "@/components/admin/admin-header"
 import { AdminStats } from "@/components/admin/admin-stats"
 import { ArrowLeft, ChevronRight } from "lucide-react"
+import { addDays } from "date-fns"; // Import addDays
 
 export default function AdminDashboard() {
   const router = useRouter()
   const [dateRange, setDateRange] = useState<{ from: Date; to: Date }>({
-    from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
+    from: addDays(new Date(), -30), // Last 30 days default
     to: new Date(),
   })
   const [selectedCluster, setSelectedCluster] = useState<string | null>(null)
   const [selectedSubCluster, setSelectedSubCluster] = useState<string | null>(null)
 
-  const handleClusterClick = (cluster: string) => {
-    setSelectedCluster(cluster)
-    setSelectedSubCluster(null)
+  // Update URL when state changes
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (selectedCluster) params.set('cluster', selectedCluster);
+    if (selectedSubCluster) params.set('subCluster', selectedSubCluster);
+    if (dateRange.from) params.set('from', dateRange.from.toISOString().split('T')[0]);
+    if (dateRange.to) params.set('to', dateRange.to.toISOString().split('T')[0]);
+
+    // Use replaceState to avoid adding to browser history for simple view changes
+    router.replace(`/admin?${params.toString()}`, { scroll: false });
+
+  }, [selectedCluster, selectedSubCluster, dateRange, router]);
+
+
+  const handleClusterClick = (clusterName: string) => {
+    console.log("Cluster clicked:", clusterName)
+    setSelectedCluster(clusterName)
+    setSelectedSubCluster(null) // Reset sub-cluster when a new cluster is selected
   }
 
-  const handleSubClusterClick = (subCluster: string) => {
-    setSelectedSubCluster(subCluster)
+  const handleSubClusterClick = (subClusterName: string) => {
+    console.log("SubCluster clicked:", subClusterName)
+    if (selectedCluster) { // Ensure parent cluster is selected
+      setSelectedSubCluster(subClusterName)
+    } else {
+      console.warn("SubCluster clicked without a parent cluster selected.")
+    }
   }
 
   const handleBackToMain = () => {
@@ -45,21 +66,21 @@ export default function AdminDashboard() {
     if (!selectedCluster) return null
 
     return (
-        <div className="flex items-center text-sm text-muted-foreground mb-2">
+        <div className="flex items-center text-sm text-muted-foreground mb-2 flex-wrap gap-x-1">
         <span className="cursor-pointer hover:text-foreground" onClick={handleBackToMain}>
           Все категории
         </span>
-          <ChevronRight className="h-4 w-4 mx-1" />
+          <ChevronRight className="h-4 w-4 flex-shrink-0" />
           {selectedSubCluster ? (
               <>
             <span className="cursor-pointer hover:text-foreground" onClick={handleBackToCluster}>
               {selectedCluster}
             </span>
-                <ChevronRight className="h-4 w-4 mx-1" />
-                <span>{selectedSubCluster}</span>
+                <ChevronRight className="h-4 w-4 flex-shrink-0" />
+                <span className="font-medium text-foreground">{selectedSubCluster}</span>
               </>
           ) : (
-              <span>{selectedCluster}</span>
+              <span className="font-medium text-foreground">{selectedCluster}</span>
           )}
         </div>
     )
@@ -105,13 +126,14 @@ export default function AdminDashboard() {
             </div>
           </div>
 
+          {/* Main Dashboard View */}
           {!selectedCluster && !selectedSubCluster && (
               <>
                 <AdminStats dateRange={dateRange} />
 
                 <Tabs defaultValue="clusters" className="space-y-4">
                   <TabsList className="bg-muted text-muted-foreground dark:bg-muted dark:text-muted-foreground">
-                    <TabsTrigger value="clusters">Запросы по кластерам</TabsTrigger>
+                    <TabsTrigger value="clusters">Запросы по категориям</TabsTrigger>
                     <TabsTrigger value="feedback">Обратная связь</TabsTrigger>
                   </TabsList>
 
@@ -121,8 +143,12 @@ export default function AdminDashboard() {
                         <CardTitle>Распределение запросов по категориям</CardTitle>
                         <CardDescription>Нажмите на категорию для просмотра подкатегорий</CardDescription>
                       </CardHeader>
-                      <CardContent className="h-[400px]">
-                        <ClusterRequestsChart dateRange={dateRange} onClusterClick={handleClusterClick} />
+                      <CardContent className="h-[500px]"> {/* Increased height */}
+                        <ClusterRequestsChart
+                            dateRange={dateRange}
+                            onClusterClick={handleClusterClick}
+                            // parentCluster is implicitly null here
+                        />
                       </CardContent>
                     </Card>
                   </TabsContent>
@@ -133,7 +159,7 @@ export default function AdminDashboard() {
                         <CardTitle>Обратная связь пользователей</CardTitle>
                         <CardDescription>Динамика оценок пользователей за выбранный период</CardDescription>
                       </CardHeader>
-                      <CardContent className="h-[400px]">
+                      <CardContent className="h-[500px]"> {/* Increased height */}
                         <FeedbackChart dateRange={dateRange} />
                       </CardContent>
                     </Card>
@@ -142,30 +168,36 @@ export default function AdminDashboard() {
               </>
           )}
 
+          {/* Subcategory View */}
           {selectedCluster && !selectedSubCluster && (
               <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                 <CardHeader>
-                  <CardTitle>Подкатегории в категории {selectedCluster}</CardTitle>
-                  <CardDescription>Нажмите на подкатегорию для просмотра чатов</CardDescription>
+                  <CardTitle>Подкатегории в категории "{selectedCluster}"</CardTitle>
+                  <CardDescription>Нажмите на столбец подкатегории для просмотра чатов</CardDescription>
                 </CardHeader>
-                <CardContent className="h-[500px]">
+                <CardContent className="h-[500px]"> {/* Increased height */}
                   <ClusterRequestsChart
                       dateRange={dateRange}
-                      parentCluster={selectedCluster}
-                      onClusterClick={handleSubClusterClick}
+                      parentCluster={selectedCluster} // Pass the selected cluster as parent
+                      onClusterClick={handleSubClusterClick} // Handler for subcategory clicks
                   />
                 </CardContent>
               </Card>
           )}
 
+          {/* Chats List View */}
           {selectedCluster && selectedSubCluster && (
               <Card className="bg-card text-card-foreground dark:bg-card dark:text-card-foreground">
                 <CardHeader>
-                  <CardTitle>Чаты в подкатегории {selectedSubCluster}</CardTitle>
+                  <CardTitle>Чаты в подкатегории "{selectedSubCluster}"</CardTitle>
                   <CardDescription>Нажмите на чат для просмотра диалога</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <ChatsList dateRange={dateRange} cluster={selectedCluster} subCluster={selectedSubCluster} />
+                  <ChatsList
+                      dateRange={dateRange}
+                      cluster={selectedCluster}
+                      subCluster={selectedSubCluster}
+                  />
                 </CardContent>
               </Card>
           )}

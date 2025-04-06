@@ -1,5 +1,6 @@
+// src/lib/websocket-service.ts
 type MessageListener = (data: any) => void;
-type ConnectionListener = () => void;
+type ConnectionListener = (status: 'open' | 'closed' | 'error', code?: number, reason?: string) => void; // Added code and reason for 'closed'/'error'
 type ErrorListener = (error: any) => void;
 
 // WebSocket states
@@ -11,6 +12,13 @@ export enum WebSocketState {
 }
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
+const MAX_RECONNECT_ATTEMPTS = 3;
+const INITIAL_RECONNECT_INTERVAL = 3000; // 3 seconds
+const MAX_RECONNECT_INTERVAL = 30000; // 30 seconds
+const RECONNECT_BACKOFF_MULTIPLIER = 1.5;
+const PING_INTERVAL = 45000; // 45 seconds
+const PONG_TIMEOUT = 15000; // 15 seconds wait for pong (increased slightly)
+const CONNECTION_TIMEOUT = 10000; // 10 seconds to establish connection
 
 export class WebSocketService {
     private socket: WebSocket | null = null;
@@ -20,301 +28,376 @@ export class WebSocketService {
     private connectionListeners: ConnectionListener[] = [];
     private errorListeners: ErrorListener[] = [];
     private reconnectTimer: NodeJS.Timeout | null = null;
-    private maxReconnectAttempts = 5;
     private reconnectAttempts = 0;
-    private reconnectInterval = 2000; // Start with 2 seconds
-    private pingInterval: NodeJS.Timeout | null = null;
-    private pongTimeout: NodeJS.Timeout | null = null;
+    private pingIntervalTimer: NodeJS.Timeout | null = null;
+    private pongTimeoutTimer: NodeJS.Timeout | null = null;
+    private connectionTimeoutTimer: NodeJS.Timeout | null = null;
     private connectingPromise: Promise<boolean> | null = null;
-    private connectingResolve: ((value: boolean) => void) | null = null;
     private isNewChat: boolean = false;
+    private isManuallyDisconnected = false;
+    private lastError: Error | null = null;
+    private instanceId = Math.random().toString(36).substring(2, 7); // For debugging multiple instances
 
     constructor(chatId: string, token: string) {
         this.chatId = chatId;
         this.token = token;
+        console.log(`WebSocketService [${this.instanceId}] created for chat ${chatId}`);
     }
 
     public setNewChatFlag(isNewChat: boolean): void {
         this.isNewChat = isNewChat;
     }
 
-    public connect(): Promise<boolean> {
-        // If we already have an active connecting promise, return it
+    private clearTimers(): void {
+        // console.log(`[${this.instanceId}] Clearing timers`);
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        if (this.pingIntervalTimer) clearInterval(this.pingIntervalTimer);
+        if (this.pongTimeoutTimer) clearTimeout(this.pongTimeoutTimer);
+        if (this.connectionTimeoutTimer) clearTimeout(this.connectionTimeoutTimer);
+        this.reconnectTimer = null;
+        this.pingIntervalTimer = null;
+        this.pongTimeoutTimer = null;
+        this.connectionTimeoutTimer = null;
+    }
+
+    private cleanupSocket(reason: string = "Unknown"): void {
+        // console.log(`[${this.instanceId}] cleanupSocket called, reason: ${reason}`);
+        this.clearTimers();
+        if (this.socket) {
+            const oldSocket = this.socket;
+            this.socket = null;
+            // Remove listeners immediately to prevent further events
+            oldSocket.onopen = null;
+            oldSocket.onmessage = null;
+            oldSocket.onclose = null;
+            oldSocket.onerror = null;
+
+            if (oldSocket.readyState !== WebSocketState.CLOSED && oldSocket.readyState !== WebSocketState.CLOSING) {
+                console.log(`[${this.instanceId}] Closing old socket (readyState ${oldSocket.readyState}), reason: ${reason}`);
+                try {
+                    // Use code 1000 for intentional client-side closure during cleanup
+                    oldSocket.close(1000, `Client cleanup: ${reason}`);
+                } catch (e) {
+                    console.error(`[${this.instanceId}] Error closing old socket during cleanup:`, e);
+                }
+            } else {
+                // console.log(`[${this.instanceId}] Old socket already closing/closed (readyState ${oldSocket.readyState})`);
+            }
+        }
+        // Clear connecting promise if cleanup happens during connection attempt
         if (this.connectingPromise) {
+            // console.log(`[${this.instanceId}] Clearing connectingPromise during cleanup`);
+            // Resolve potentially waiting promise as false if cleanup happens before success
+            // Note: This resolution might need careful handling depending on the exact scenario
+            // connect() already handles resolving the promise on error/timeout.
+            this.connectingPromise = null;
+        }
+    }
+
+
+    public connect(): Promise<boolean> {
+        if (this.connectingPromise) {
+            console.log(`[${this.instanceId}] WebSocket connect called while already connecting for chat ${this.chatId}`);
             return this.connectingPromise;
         }
+        if (this.isConnected()) {
+            console.log(`[${this.instanceId}] WebSocket already connected for chat ${this.chatId}`);
+            return Promise.resolve(true);
+        }
 
-        // Create a new promise for this connection attempt
+        this.isManuallyDisconnected = false;
+
         this.connectingPromise = new Promise((resolve) => {
-            this.connectingResolve = resolve;
+            const attemptNumber = this.reconnectAttempts + 1;
+
+            if (attemptNumber > MAX_RECONNECT_ATTEMPTS) {
+                const errorMsg = `Maximum reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached for chat ${this.chatId}`;
+                console.error(`[${this.instanceId}] ${errorMsg}`);
+                this.lastError = new Error(errorMsg);
+                this.notifyError(this.lastError);
+                this.notifyConnectionListeners('error', undefined, errorMsg);
+                resolve(false);
+                // No need to clear promise here, finally block will do it
+                return;
+            }
+
+            this.cleanupSocket(`Starting connection attempt ${attemptNumber}`);
+
+            let wsUrl = `${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`;
+            if (this.isNewChat) {
+                wsUrl += '&new_chat=true';
+            }
+
+            console.log(`[${this.instanceId}] Connecting to WebSocket: ${wsUrl} (attempt ${attemptNumber}/${MAX_RECONNECT_ATTEMPTS})`);
 
             try {
-                // If socket exists and is already connecting or open, don't create a new connection
-                if (this.socket && (this.socket.readyState === WebSocketState.CONNECTING ||
-                    this.socket.readyState === WebSocketState.OPEN)) {
-                    console.log('WebSocket connection already exists');
-                    resolve(true);
-                    return;
-                }
+                const newSocket = new WebSocket(wsUrl);
 
-                // Clear any existing timers
-                this.clearTimers();
+                newSocket.onopen = (event) => this.handleOpen(event, newSocket, resolve);
+                newSocket.onmessage = (event) => this.handleMessage(event, newSocket);
+                newSocket.onclose = (event) => this.handleClose(event, newSocket);
+                // Pass resolve to error handler ONLY to resolve the connect promise on connection error
+                newSocket.onerror = (event) => this.handleError(event, newSocket, this.connectingPromise ? resolve : undefined);
 
-                // Don't try to reconnect if max attempts reached
-                if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-                    this.notifyError(new Error('Maximum reconnection attempts reached'));
-                    resolve(false);
-                    return;
-                }
+                this.socket = newSocket; // Assign to instance variable *after* handlers are set
 
-                // Add new_chat flag as query parameter if this is a new chat
-                let wsUrl = `${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`;
-                if (this.isNewChat) {
-                    wsUrl += '&new_chat=true';
-                }
-
-                console.log(`Connecting to WebSocket: ${wsUrl}`);
-
-                // Create a new WebSocket
-                this.socket = new WebSocket(wsUrl);
-
-                // Set up event handlers
-                this.socket.onopen = this.handleOpen.bind(this);
-                this.socket.onmessage = this.handleMessage.bind(this);
-                this.socket.onclose = this.handleClose.bind(this);
-                this.socket.onerror = this.handleError.bind(this);
-
-                // Set a timeout for the connection attempt
-                setTimeout(() => {
-                    if (this.connectingResolve) {
-                        console.log('WebSocket connection timeout');
-                        this.connectingResolve(false);
-                        this.connectingResolve = null;
-                        this.connectingPromise = null;
+                this.connectionTimeoutTimer = setTimeout(() => {
+                    if (this.socket === newSocket && newSocket.readyState === WebSocketState.CONNECTING) {
+                        console.warn(`[${this.instanceId}] WebSocket connection attempt timed out for chat ${this.chatId}`);
+                        // Trigger close handling which includes cleanup and reconnect logic
+                        this.handleClose({ code: 1006, reason: "Connection timeout", wasClean: false } as CloseEvent, newSocket);
+                        // Resolve the connection promise as false if it's still pending
+                        if (this.connectingPromise) {
+                            resolve(false);
+                        }
                     }
-                }, 10000); // 10 second timeout
-            } catch (error) {
-                console.error('Error connecting to WebSocket:', error);
-                this.notifyError(error);
+                }, CONNECTION_TIMEOUT);
 
-                // Try to reconnect after error
-                this.reconnect();
+            } catch (error) {
+                console.error(`[${this.instanceId}] Error creating WebSocket for chat ${this.chatId}:`, error);
+                this.notifyError(error);
+                // Trigger close handling for reconnect logic
+                this.handleClose({ code: 1006, reason: "Connection creation error", wasClean: false } as CloseEvent, null);
                 resolve(false);
             }
+        });
+
+        // Ensure the promise reference is cleared once it's settled
+        this.connectingPromise.finally(() => {
+            this.connectingPromise = null;
         });
 
         return this.connectingPromise;
     }
 
     public disconnect(): void {
-        if (this.socket && this.socket.readyState === WebSocketState.OPEN) {
-            this.socket.close();
-        }
-        this.clearTimers();
-
-        // Clear the connecting promise
-        this.connectingPromise = null;
-        this.connectingResolve = null;
+        console.log(`[${this.instanceId}] Manually disconnecting WebSocket for chat ${this.chatId}`);
+        this.isManuallyDisconnected = true;
+        this.lastError = null;
+        this.reconnectAttempts = 0;
+        this.cleanupSocket("Manual disconnect");
+        this.notifyConnectionListeners('closed', 1000, "Manual disconnect");
     }
 
-    public addMessageListener(listener: MessageListener): void {
-        this.messageListeners.push(listener);
-    }
-
-    public removeMessageListener(listener: MessageListener): void {
-        this.messageListeners = this.messageListeners.filter(l => l !== listener);
-    }
-
-    public addConnectionListener(listener: ConnectionListener): void {
-        this.connectionListeners.push(listener);
-    }
-
-    public removeConnectionListener(listener: ConnectionListener): void {
-        this.connectionListeners = this.connectionListeners.filter(l => l !== listener);
-    }
-
-    public addErrorListener(listener: ErrorListener): void {
-        this.errorListeners.push(listener);
-    }
-
-    public removeErrorListener(listener: ErrorListener): void {
-        this.errorListeners = this.errorListeners.filter(l => l !== listener);
-    }
-
-    public sendMessage(data: any): void {
-        if (this.socket && this.socket.readyState === WebSocketState.OPEN) {
-            const jsonData = typeof data === 'string' ? data : JSON.stringify(data);
-            console.log('Sending WebSocket message:', jsonData);
-            this.socket.send(jsonData);
-        } else {
-            console.error('Cannot send message, WebSocket is not connected');
-            this.notifyError(new Error('WebSocket is not connected'));
-        }
-    }
-
-    public requestStreamContent(messageId: string): void {
-        if (!messageId) {
-            console.error('Cannot request stream, no message ID provided');
+    // --- Event Handlers ---
+    private handleOpen(event: Event, socketInstance: WebSocket, resolve: (value: boolean) => void): void {
+        if (this.socket !== socketInstance) {
+            console.warn(`[${this.instanceId}] handleOpen received for outdated socket instance.`);
+            resolve(false); // Resolve the original promise as failed
+            if (socketInstance.readyState === WebSocketState.OPEN) {
+                try { socketInstance.close(1000, "Stale connection opened"); } catch(e){}
+            }
             return;
         }
 
-        this.sendMessage({
-            type: 'stream_request',
-            message_id: messageId
-        });
-    }
+        console.log(`[${this.instanceId}] WebSocket connection established for chat ${this.chatId}`);
+        if(this.connectionTimeoutTimer) clearTimeout(this.connectionTimeoutTimer);
+        this.connectionTimeoutTimer = null;
+        this.reconnectAttempts = 0;
+        this.lastError = null;
 
-    public requestSuggestions(): void {
-        this.sendMessage({
-            type: 'get_suggestions'
-        });
-    }
-
-    public getState(): WebSocketState | null {
-        return this.socket?.readyState ?? null;
-    }
-
-    public isConnected(): boolean {
-        return this.socket?.readyState === WebSocketState.OPEN;
-    }
-
-    // Send ping to keep connection alive
-    private sendPing(): void {
-        if (this.isConnected()) {
-            const pingData = {
-                type: 'ping',
-                timestamp: Date.now()
-            };
-            this.sendMessage(pingData);
-
-            // Set timeout for pong response
-            this.pongTimeout = setTimeout(() => {
-                // No pong received in time, reconnect
-                console.warn('WebSocket ping timeout, reconnecting...');
-                this.reconnect();
-            }, 5000); // 5 second timeout for pong
-        }
-    }
-
-    private startPingInterval(): void {
-        // Send ping every 30 seconds to keep connection alive
-        this.pingInterval = setInterval(() => this.sendPing(), 30000);
-    }
-
-    private clearTimers(): void {
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-        if (this.pongTimeout) {
-            clearTimeout(this.pongTimeout);
-            this.pongTimeout = null;
-        }
-    }
-
-    private reconnect(): void {
-        this.reconnectAttempts++;
-
-        // Calculate backoff time (exponential backoff)
-        const backoffTime = Math.min(
-            this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts - 1),
-            30000 // Max 30 seconds
-        );
-
-        console.log(`Attempting to reconnect in ${backoffTime / 1000} seconds...`);
-
-        // Schedule reconnection
-        this.reconnectTimer = setTimeout(() => {
-            this.connect();
-        }, backoffTime);
-    }
-
-    private handleOpen(event: Event): void {
-        console.log('WebSocket connection established');
-        this.reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-
-        // Start ping interval
         this.startPingInterval();
 
-        // For new chats, request suggestions immediately
-        if (this.isNewChat) {
-            setTimeout(() => {
-                this.requestSuggestions();
-            }, 500);
-        }
-
-        // Notify listeners
-        this.connectionListeners.forEach(listener => listener());
-
-        // Resolve the connecting promise
-        if (this.connectingResolve) {
-            this.connectingResolve(true);
-            this.connectingResolve = null;
-        }
-
-        // Clear the promise after successful connection
-        this.connectingPromise = null;
+        this.notifyConnectionListeners('open');
+        resolve(true);
     }
 
-    private handleMessage(event: MessageEvent): void {
-        try {
-            console.log('WebSocket message received:', event.data);
+    private handleMessage(event: MessageEvent, socketInstance: WebSocket): void {
+        if (this.socket !== socketInstance) return; // Ignore messages from old sockets
 
-            // Handle string messages (could be from a text frame)
-            let data;
-            if (typeof event.data === 'string') {
-                try {
-                    data = JSON.parse(event.data);
-                } catch (e) {
-                    console.log('Received non-JSON message:', event.data);
-                    // Still try to notify listeners with raw data
-                    this.messageListeners.forEach(listener => listener(event.data));
-                    return;
-                }
-            } else {
-                console.log('Received non-string message type:', typeof event.data);
+        this.resetPongTimeout(); // Reset pong timer on ANY message
+
+        try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'pong') {
+                // console.log(`[${this.instanceId}] Pong received`); // Debug Pong
                 return;
             }
 
-            // Clear pong timeout if this is a pong response
-            if (data.type === 'pong') {
-                if (this.pongTimeout) {
-                    clearTimeout(this.pongTimeout);
-                    this.pongTimeout = null;
-                }
-                return; // Don't propagate pongs to listeners
-            }
+            // console.log(`[${this.instanceId}] WebSocket message received:`, event.data); // Debug Message
 
-            // Notify listeners of other messages
-            this.messageListeners.forEach(listener => listener(data));
+            this.messageListeners.forEach(listener => {
+                try { listener(data); } catch (e) { console.error(`[${this.instanceId}] Error in message listener:`, e); }
+            });
+
         } catch (error) {
-            console.error('Error handling WebSocket message:', error);
+            console.error(`[${this.instanceId}] Error handling WebSocket message:`, error);
+            console.log(`[${this.instanceId}] Raw message data:`, event.data);
         }
     }
 
-    private handleClose(event: CloseEvent): void {
-        console.log(`WebSocket closed: ${event.code} ${event.reason}`);
+    private handleClose(event: CloseEvent, socketInstance: WebSocket | null): void {
+        // Prevent handling close for sockets that aren't the current one
+        if (socketInstance && this.socket !== socketInstance) {
+            console.warn(`[${this.instanceId}] handleClose received for outdated socket instance (code=${event.code}). Ignoring.`);
+            return;
+        }
+        // If this.socket is already null, we've likely handled the closure already
+        if (!this.socket && socketInstance == null) {
+            console.log(`[${this.instanceId}] handleClose called after socket already cleaned up (code=${event.code}).`);
+            return;
+        }
 
-        this.clearTimers();
+        console.log(`[${this.instanceId}] WebSocket closed for chat ${this.chatId}: code=${event.code}, reason='${event.reason}', wasClean=${event.wasClean}`);
 
-        // Only reconnect for specific close codes
-        if (event.code !== 1000 && event.code !== 1001) { // Normal closure or going away
-            this.reconnect();
+        const wasManuallyDisconnected = this.isManuallyDisconnected;
+
+        // Perform cleanup *before* notifying listeners or scheduling reconnect
+        this.cleanupSocket(`Closed with code ${event.code}`);
+
+        // Notify listeners about the closure status
+        this.notifyConnectionListeners('closed', event.code, event.reason);
+
+        // Decide whether to reconnect
+        if (!wasManuallyDisconnected && event.code !== 1000) {
+            // Codes like 1006 (Abnormal Closure), 1012 (Service Restart) should trigger reconnect
+            const errorReason = event.reason || `WebSocket closed unexpectedly with code ${event.code}`;
+            // Avoid setting lastError if it's already set to max retries
+            if (!this.lastError?.message.includes("Maximum reconnection attempts reached")) {
+                this.lastError = new Error(errorReason);
+                this.notifyError(this.lastError);
+            }
+            this.scheduleReconnect();
+        } else {
+            console.log(`[${this.instanceId}] Clean disconnect or manual disconnect, not reconnecting.`);
+            this.reconnectAttempts = 0;
+            this.isManuallyDisconnected = false; // Reset flag only after handling closure
         }
     }
 
-    private handleError(event: Event): void {
-        console.error('WebSocket error:', event);
-        this.notifyError(event);
+
+    private handleError(event: Event, socketInstance: WebSocket, resolve?: (value: boolean) => void): void {
+        if (this.socket !== socketInstance) {
+            console.warn(`[${this.instanceId}] handleError received for outdated socket instance.`);
+            return; // Ignore errors from old sockets
+        }
+        console.error(`[${this.instanceId}] WebSocket error event for chat ${this.chatId}. Event type: ${event.type}`);
+
+        const error = new Error("WebSocket error occurred"); // Generic error, specific details often unavailable
+        this.lastError = error;
+        this.notifyError(error);
+        this.notifyConnectionListeners('error', undefined, 'WebSocket error');
+
+        // If this error happened during the initial connection attempt, resolve the promise as failed
+        if (resolve) {
+            console.log(`[${this.instanceId}] Resolving connect promise as false due to error during connection`);
+            resolve(false);
+            // connectingPromise is cleared in connect() finally block
+        }
+
+        // IMPORTANT: Don't clean up here. The 'close' event reliably follows 'error' in browsers.
+        // Let handleClose manage cleanup and reconnection to avoid race conditions.
     }
 
-    private notifyError(error: any): void {
-        this.errorListeners.forEach(listener => listener(error));
+    // --- Keep-Alive ---
+
+    private startPingInterval(): void {
+        // console.log(`[${this.instanceId}] Attempting to start ping interval...`); // Debug
+        if (this.pingIntervalTimer) clearInterval(this.pingIntervalTimer);
+        if (this.pongTimeoutTimer) clearTimeout(this.pongTimeoutTimer);
+
+        this.pingIntervalTimer = setInterval(() => this.sendPing(), PING_INTERVAL);
+        console.log(`[${this.instanceId}] Ping interval started for chat ${this.chatId}`);
     }
+
+    private sendPing(): void {
+        if (this.isConnected()) {
+            try {
+                // console.log(`[${this.instanceId}] Sending ping for chat ${this.chatId}`);
+                this.socket?.send(JSON.stringify({ type: 'ping', timestamp: Date.now() }));
+                this.resetPongTimeout(); // Start/reset waiting for pong
+            } catch (e) {
+                console.error(`[${this.instanceId}] Error sending ping for chat ${this.chatId}:`, e);
+                // Force close and let handleClose manage reconnect
+                this.cleanupSocket("Ping send error");
+                this.notifyConnectionListeners('error', 1006, "Ping send error"); // Notify listeners
+                this.scheduleReconnect(); // Explicitly schedule reconnect after error during ping
+            }
+        } else {
+            // console.warn(`[${this.instanceId}] Cannot send ping, WebSocket not connected for chat ${this.chatId}`);
+            if (this.pingIntervalTimer) clearInterval(this.pingIntervalTimer); // Stop pinging if not connected
+            this.pingIntervalTimer = null;
+        }
+    }
+
+    private resetPongTimeout(): void {
+        if (this.pongTimeoutTimer) clearTimeout(this.pongTimeoutTimer);
+        this.pongTimeoutTimer = setTimeout(() => {
+            // Check if the socket still exists before acting
+            if (this.socket && this.socket.readyState === WebSocketState.OPEN) {
+                console.warn(`[${this.instanceId}] Pong timeout for chat ${this.chatId}. Closing and reconnecting.`);
+                // Force close with a specific reason
+                this.cleanupSocket("Pong timeout");
+                this.notifyConnectionListeners('error', 1006, "Pong timeout");
+                this.scheduleReconnect(); // Explicitly schedule reconnect
+            } else {
+                // console.log(`[${this.instanceId}] Pong timeout occurred after socket was closed/cleaned up.`);
+                if (this.pongTimeoutTimer) clearTimeout(this.pongTimeoutTimer); // Ensure timer is cleared
+                this.pongTimeoutTimer = null;
+            }
+        }, PONG_TIMEOUT);
+    }
+
+    // --- Reconnection ---
+
+    private scheduleReconnect(): void {
+        if (this.reconnectTimer) return; // Already scheduled
+        if (this.isManuallyDisconnected) return;
+        if (this.connectingPromise) return; // Already attempting to connect
+
+        const nextAttempt = this.reconnectAttempts + 1;
+        if (nextAttempt > MAX_RECONNECT_ATTEMPTS) {
+            console.error(`[${this.instanceId}] Max reconnect attempts reached for chat ${this.chatId}. Giving up.`);
+            if (!this.lastError?.message.includes("Maximum reconnection attempts reached")) {
+                this.lastError = new Error("Maximum reconnection attempts reached");
+                this.notifyError(this.lastError);
+                this.notifyConnectionListeners('error', undefined, "Max reconnect attempts");
+            }
+            this.reconnectAttempts = MAX_RECONNECT_ATTEMPTS; // Cap attempts value
+            return;
+        }
+
+        const backoffTime = Math.min(
+            INITIAL_RECONNECT_INTERVAL * Math.pow(RECONNECT_BACKOFF_MULTIPLIER, nextAttempt - 1),
+            MAX_RECONNECT_INTERVAL
+        );
+
+        console.log(`[${this.instanceId}] Scheduling reconnect attempt ${nextAttempt}/${MAX_RECONNECT_ATTEMPTS} in ${(backoffTime / 1000).toFixed(1)}s for chat ${this.chatId}`);
+
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (!this.isManuallyDisconnected && !this.isConnected() && !this.connectingPromise) {
+                this.reconnectAttempts = nextAttempt; // Update attempt count *before* connecting
+                this.connect();
+            } else {
+                console.log(`[${this.instanceId}] Skipping scheduled reconnect for chat ${this.chatId} (connected=${this.isConnected()}, connecting=${!!this.connectingPromise}, manualDisconnect=${this.isManuallyDisconnected})`);
+                if (this.isConnected() || this.connectingPromise) {
+                    this.reconnectAttempts = 0; // Reset attempts if connection was restored elsewhere
+                }
+            }
+        }, backoffTime);
+    }
+
+    // --- Listener Management ---
+    public addMessageListener(listener: MessageListener): void { if (!this.messageListeners.includes(listener)) this.messageListeners.push(listener); }
+    public removeMessageListener(listener: MessageListener): void { this.messageListeners = this.messageListeners.filter(l => l !== listener); }
+    public addConnectionListener(listener: ConnectionListener): void { if (!this.connectionListeners.includes(listener)) this.connectionListeners.push(listener); }
+    public removeConnectionListener(listener: ConnectionListener): void { this.connectionListeners = this.connectionListeners.filter(l => l !== listener); }
+    public addErrorListener(listener: ErrorListener): void { if (!this.errorListeners.includes(listener)) this.errorListeners.push(listener); }
+    public removeErrorListener(listener: ErrorListener): void { this.errorListeners = this.errorListeners.filter(l => l !== listener); }
+
+    private notifyError(error: any): void { this.errorListeners.forEach(l => { try { l(error); } catch (e) { console.error(`[${this.instanceId}] Error in error listener:`, e); } }); }
+    private notifyConnectionListeners(status: 'open' | 'closed' | 'error', code?: number, reason?: string): void {
+        this.connectionListeners.forEach(l => { try { l(status, code, reason); } catch (e) { console.error(`[${this.instanceId}] Error in connection listener:`, e); } });
+    }
+
+    // --- State Checks ---
+    public getState(): WebSocketState {
+        if (this.connectingPromise) return WebSocketState.CONNECTING;
+        return this.socket?.readyState ?? WebSocketState.CLOSED;
+    }
+    public isConnected(): boolean { return this.socket?.readyState === WebSocketState.OPEN; }
 }
 
 export default WebSocketService;
