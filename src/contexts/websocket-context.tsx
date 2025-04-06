@@ -20,6 +20,7 @@ interface WebSocketContextType {
     removeMessageListener: (listener: (message: WebSocketMessage) => void) => void;
     checkForCompletedMessages: () => void;
     clearSuggestions: () => void;
+    clearLastCompletedMessage: () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined);
@@ -67,6 +68,13 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
     // Clear suggestions method
     const clearSuggestions = useCallback(() => {
         setChatSuggestions([]);
+    }, []);
+
+    // Method to clear the last completed message state
+    const clearLastCompletedMessage = useCallback(() => {
+        setLastCompletedMessage(null);
+        // Optionally clear from localStorage too, though maybe not necessary
+        // localStorage.removeItem('last-completed-message');
     }, []);
 
     const handleMessageComplete = useCallback((message: MessageComplete) => {
@@ -531,7 +539,8 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         addMessageListener,
         removeMessageListener,
         checkForCompletedMessages,
-        clearSuggestions
+        clearSuggestions,
+        clearLastCompletedMessage,
     };
 
     return (

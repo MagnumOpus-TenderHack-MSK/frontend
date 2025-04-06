@@ -59,7 +59,8 @@ const ChatAppContent = () => {
         lastCompletedMessage,
         chatSuggestions,
         chatNameUpdate,
-        clearSuggestions
+        clearSuggestions,
+        clearLastCompletedMessage,
     } = useWebSocket();
 
     const [mounted, setMounted] = useState(false);
@@ -252,14 +253,20 @@ const ChatAppContent = () => {
 
     const deduplicateAndSortMessages = useCallback((messages: ChatMessage[] = []) => {
         const uniqueMessages = new Map<string, ChatMessage>();
-        messages.forEach(message => {
-            // Prioritize non-temporary messages if IDs match
-            const existing = uniqueMessages.get(message.id);
-            if (!existing || !existing.id.startsWith('temp-')) {
-                uniqueMessages.set(message.id, message);
-            } else if (existing && existing.id.startsWith('temp-') && !message.id.startsWith('temp-')) {
-                // Replace temp message with real message if real one arrives
-                uniqueMessages.set(message.id, message);
+        messages.forEach(newMessage => {
+            const existingMessage = uniqueMessages.get(newMessage.id);
+
+            if (!existingMessage) {
+                // If no message with this ID exists, add the new one
+                uniqueMessages.set(newMessage.id, newMessage);
+            } else {
+                // If a message with this ID exists...
+                // Only replace the existing message if the new message is NOT temporary.
+                // This ensures a 'real' message always overwrites a 'temporary' one.
+                if (!newMessage.id.startsWith('temp-')) {
+                     uniqueMessages.set(newMessage.id, newMessage);
+                }
+                // If newMessage IS temporary, we implicitly keep the existing one.
             }
         });
         return Array.from(uniqueMessages.values()).sort(
@@ -616,8 +623,8 @@ const ChatAppContent = () => {
 
     // Update chat history when a message is completed
     useEffect(() => {
-        if (lastCompletedMessage && activeChat) {
-            console.log("Processing completed message:", lastCompletedMessage.id);
+        if (lastCompletedMessage && activeChat && isConnected) {
+            console.log("Processing completed message:", lastCompletedMessage.id, "for active chat:", activeChat);
             setChatHistory((prevHistory) =>
                 prevHistory.map((chat) => {
                     if (chat.id === activeChat) {
@@ -647,8 +654,19 @@ const ChatAppContent = () => {
                     return chat;
                 })
             );
+
+            // Move the active chat to the top of the list
+            setChatHistory(prev => {
+                const updatedChat = prev.find(chat => chat.id === activeChat);
+                if (!updatedChat) return prev;
+                const otherChats = prev.filter(chat => chat.id !== activeChat);
+                return [updatedChat, ...otherChats];
+            });
+
+            // Clear the processed message from the context state
+            clearLastCompletedMessage();
         }
-    }, [lastCompletedMessage, activeChat, deduplicateAndSortMessages]);
+    }, [lastCompletedMessage, activeChat, isConnected, deduplicateAndSortMessages, clearLastCompletedMessage]);
 
     // Set mounted state
     useEffect(() => {
@@ -658,6 +676,16 @@ const ChatAppContent = () => {
     if (!mounted) {
         return null;
     }
+
+    // Determine if the current state represents a new, empty chat
+    const isEffectivelyNewChat = !activeChat || (currentChat && (!currentChat.messages || currentChat.messages.length === 0) && !isTyping && !pendingMessageId);
+
+    // Decide which suggestions to show in the input
+    const suggestionsForInput = chatSuggestions.length > 0
+        ? chatSuggestions // Prioritize AI suggestions from context if they exist
+        : isEffectivelyNewChat
+            ? initialSuggestions // Fallback to default suggestions for a new/empty chat state
+            : []; // Otherwise, no suggestions (e.g., existing chat without AI suggestions yet)
 
     return (
         <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -765,8 +793,8 @@ const ChatAppContent = () => {
                         isLoading={isLoadingChats}
                         isTyping={isTyping}
                         isUploading={fileUploadProgress !== null}
-                        suggestions={inputSuggestions}
-                        aiSuggestions={chatSuggestions} // Pass AI-generated suggestions
+                        suggestions={suggestionsForInput}
+                        aiSuggestions={chatSuggestions}
                         onSuggestionClick={handleSuggestionClick}
                     />
                 </div>

@@ -34,33 +34,25 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
     // Access checkForCompletedMessages from WebSocket context
     const { checkForCompletedMessages } = useWebSocket();
 
-    // Deduplicate messages based on their IDs and content
-    const deduplicateMessages = useCallback((messages: ChatMessageType[] = []) => {
+    // Deduplicate messages based on their IDs and content (Ensure this matches ChatAppContent)
+    const deduplicateAndSortMessages = useCallback((messages: ChatMessageType[] = []) => {
         const uniqueMessages = new Map<string, ChatMessageType>();
+        messages.forEach(newMessage => {
+            const existingMessage = uniqueMessages.get(newMessage.id);
 
-        // First pass: add all non-temporary messages to the map
-        messages.forEach(message => {
-            if (!message.id.startsWith('temp-')) {
-                uniqueMessages.set(message.id, message);
-            }
-        });
-
-        // Second pass: add temporary messages only if no real message exists with similar content
-        messages.forEach(message => {
-            if (message.id.startsWith('temp-')) {
-                // Check if there's a non-temp message with the same content and type
-                const hasRealMessage = Array.from(uniqueMessages.values()).some(
-                    m => !m.id.startsWith('temp-') &&
-                        m.content === message.content &&
-                        String(m.message_type).toLowerCase() === String(message.message_type).toLowerCase()
-                );
-
-                if (!hasRealMessage) {
-                    uniqueMessages.set(message.id, message);
+            if (!existingMessage) {
+                // If no message with this ID exists, add the new one
+                uniqueMessages.set(newMessage.id, newMessage);
+            } else {
+                // If a message with this ID exists...
+                // Only replace the existing message if the new message is NOT temporary.
+                // This ensures a 'real' message always overwrites a 'temporary' one.
+                if (!newMessage.id.startsWith('temp-')) {
+                     uniqueMessages.set(newMessage.id, newMessage);
                 }
+                // If newMessage IS temporary, we implicitly keep the existing one.
             }
         });
-
         return Array.from(uniqueMessages.values()).sort(
             (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         );
@@ -87,14 +79,14 @@ export const MessageManager: React.FC<MessageManagerProps> = ({
                 previousChatIdRef.current = chatId;
             }
 
-            // Process and deduplicate messages
-            const deduped = deduplicateMessages(currentChat.messages);
+            // Process and deduplicate messages using the unified function
+            const deduped = deduplicateAndSortMessages(currentChat.messages);
             setRenderedMessages(deduped);
         } else {
             // Critical fix: ensure we reset messages when no currentChat
             setRenderedMessages([]);
         }
-    }, [currentChat, deduplicateMessages]);
+    }, [currentChat, deduplicateAndSortMessages]);
 
     // Detect scroll events to update "near bottom" status
     useEffect(() => {
