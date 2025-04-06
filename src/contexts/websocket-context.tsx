@@ -3,7 +3,7 @@ import { WebSocketService } from '@/lib/websocket-service';
 import { WebSocketMessage, MessageChunk, MessageComplete, MessageSuggestion } from '@/lib/types';
 
 interface WebSocketContextType {
-    connectWebSocket: (chatId: string) => void;
+    connectWebSocket: (chatId: string, isNewChat?: boolean) => void;
     disconnectWebSocket: () => void;
     isConnected: boolean;
     isTyping: boolean;
@@ -13,6 +13,7 @@ interface WebSocketContextType {
     lastCompletedMessage: {
         id: string;
         content: string;
+        sources?: any[];
     } | null;
     chatNameUpdate: string | null;
     addMessageListener: (listener: (message: WebSocketMessage) => void) => void;
@@ -33,6 +34,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
     const [lastCompletedMessage, setLastCompletedMessage] = useState<{
         id: string;
         content: string;
+        sources?: any[];
     } | null>(null);
 
     const webSocketRef = useRef<WebSocketService | null>(null);
@@ -44,8 +46,8 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
     const lastChunkTimeRef = useRef<Record<string, number>>({});
     const animationInProgressRef = useRef<boolean>(false);
     const completionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const messageCompletionCheckerRef = useRef<NodeJS.Timeout | null>(null);
     const forceCompleteTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const messageCompletionCheckerRef = useRef<NodeJS.Timeout | null>(null);
     const currentChatIdRef = useRef<string | null>(null);
     const suggestionsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -67,9 +69,8 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         setChatSuggestions([]);
     }, []);
 
-    // Define handleMessageComplete first
     const handleMessageComplete = useCallback((message: MessageComplete) => {
-        const { message_id, sources, suggestions } = message;
+        const { message_id, sources, suggestions, chat_name } = message;
         console.log("Message complete for message ID:", message_id);
 
         // Clear any pending timeouts
@@ -89,10 +90,16 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         // Ensure we have the complete message content
         const completeContent = messageChunksRef.current[message_id] || '';
 
+        // If we received a chat name update, store it
+        if (chat_name) {
+            setChatNameUpdate(chat_name);
+        }
+
         // Update last completed message state and localStorage
         const completedMessage = {
             id: message_id,
-            content: completeContent
+            content: completeContent,
+            sources: sources || []
         };
 
         try {
@@ -311,6 +318,34 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
                     chat_name: message.chat_name, // Pass chat name if available
                 });
             }
+        } else if (message.type === "suggestions") {
+            // Handle suggestions sent from server directly
+            if (message.suggestions && Array.isArray(message.suggestions)) {
+                console.log("Received direct suggestions:", message.suggestions);
+
+                // Transform to our format
+                const formattedSuggestions = message.suggestions.map((text, index) => ({
+                    id: `suggestion-${Date.now()}-${index}`,
+                    text,
+                    icon: getIconForSuggestion(text)
+                }));
+
+                setChatSuggestions(formattedSuggestions);
+            }
+        } else if (message.type === "connection_established") {
+            // Check if there are initial suggestions provided with connection message
+            if (message.suggestions && Array.isArray(message.suggestions)) {
+                console.log("Received initial suggestions on connection:", message.suggestions);
+
+                // Transform to our format
+                const formattedSuggestions = message.suggestions.map((text, index) => ({
+                    id: `suggestion-${Date.now()}-${index}`,
+                    text,
+                    icon: getIconForSuggestion(text)
+                }));
+
+                setChatSuggestions(formattedSuggestions);
+            }
         }
     }, [handleMessageChunk, handleMessageComplete]);
 
@@ -321,34 +356,38 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
             webSocketRef.current = null;
         }
 
-        // Save current chat ID and new chat status
+        // Save current chat ID
         currentChatIdRef.current = chatId;
-        const isNewChatRef = isNewChat; // Store this in a variable for use in message handler
 
-        // Reset state
+        // Reset states based on whether this is a new chat or not
         setIsTyping(false);
         setPendingMessageId(null);
         setStreamedContent('');
         setChatNameUpdate(null);
-        setLastCompletedMessage(null);
-        setChatSuggestions([]);
 
-        // Keep message chunks from this chat but clear other data
+        // Only clear suggestions when switching to an existing chat, not a new one
+        if (!isNewChat) {
+            setChatSuggestions([]);
+        }
+
+        // Clean up message processing data
+        // Keep message chunks only from this chat
         const currentChunks: Record<string, string> = {};
         Object.keys(messageChunksRef.current).forEach(key => {
             if (key.includes(chatId)) {
                 currentChunks[key] = messageChunksRef.current[key];
             }
         });
-
         messageChunksRef.current = currentChunks;
+
+        // Reset tracking
         completedMessagesRef.current.clear();
         processedChunksRef.current.clear();
         chunkCountRef.current = {};
         lastChunkTimeRef.current = {};
         animationInProgressRef.current = false;
 
-        // Clear any pending timeouts
+        // Clear timeouts
         if (completionTimeoutRef.current) {
             clearTimeout(completionTimeoutRef.current);
             completionTimeoutRef.current = null;
@@ -359,12 +398,8 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
             forceCompleteTimeoutRef.current = null;
         }
 
-        if (messageCompletionCheckerRef.current) {
-            clearInterval(messageCompletionCheckerRef.current);
-        }
-
-        // Clear suggestions timeout
-        if (suggestionsTimeoutRef.current) {
+        // Only clear suggestions timeout for existing chats
+        if (!isNewChat && suggestionsTimeoutRef.current) {
             clearTimeout(suggestionsTimeoutRef.current);
             suggestionsTimeoutRef.current = null;
         }
@@ -377,21 +412,10 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
 
         try {
             const ws = new WebSocketService(chatId, token);
+            ws.setNewChatFlag(isNewChat);
 
-            // IMPORTANT: Create a wrapper function that will filter out automated messages for new chats
-            const messageHandlerWrapper = (message: WebSocketMessage) => {
-                // For new chats, ignore the first automated message from the system
-                if (isNewChatRef &&
-                    (message.type === "chunk" || message.type === "complete" || message.type === "stream_content") &&
-                    !message.userInitiated) {
-                    console.log("Ignoring automated message for new chat:", message);
-                    return;
-                }
-                handleWebSocketMessage(message);
-            };
-
-            // Bind methods with the wrapper instead of direct handler
-            ws.addMessageListener(messageHandlerWrapper);
+            // Set up event handlers
+            ws.addMessageListener(handleWebSocketMessage);
 
             ws.addConnectionListener(() => {
                 console.log("WebSocket connected successfully");
@@ -421,12 +445,18 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
             setIsConnected(false);
             setIsTyping(false);
             setPendingMessageId(null);
-            setLastCompletedMessage(null);
+
+            // Don't clear these states as they might be needed for UI updates
+            // setLastCompletedMessage(null);
             setChatNameUpdate(null);
-            setChatSuggestions([]);
-            // Don't clear streamedContent here so it can remain visible in the UI
+
+            // Don't clear suggestions here - they'll be managed in connectWebSocket
+            // setChatSuggestions([]);
+
+            // Don't clear streamedContent so it remains visible in the UI
             currentChatIdRef.current = null;
 
+            // Clear all timeouts and intervals
             if (completionTimeoutRef.current) {
                 clearTimeout(completionTimeoutRef.current);
                 completionTimeoutRef.current = null;
@@ -442,11 +472,11 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
                 messageCompletionCheckerRef.current = null;
             }
 
-            // Clear suggestions timeout
-            if (suggestionsTimeoutRef.current) {
-                clearTimeout(suggestionsTimeoutRef.current);
-                suggestionsTimeoutRef.current = null;
-            }
+            // Don't clear suggestions timeout - keep suggestions between reconnects
+            // if (suggestionsTimeoutRef.current) {
+            //     clearTimeout(suggestionsTimeoutRef.current);
+            //     suggestionsTimeoutRef.current = null;
+            // }
         }
     }, []);
 

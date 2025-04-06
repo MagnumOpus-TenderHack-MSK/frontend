@@ -41,26 +41,18 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
           toDate
       )
 
-      if (Array.isArray(response)) {
+      console.log("Chats API response:", response);
+
+      if ('items' in response) {
+        setChats(response.items);
+        setTotal(response.total);
+      } else if (Array.isArray(response)) {
         // Handle case where API returns array directly
-        const filteredChats = response.filter(chat => {
-          // Only show chats that belong to this subcluster
-          return chat.subcategories &&
-              chat.subcategories.includes(subCluster);
-        });
-
-        setChats(filteredChats)
-        setTotal(filteredChats.length)
+        setChats(response);
+        setTotal(response.length);
       } else {
-        // Handle paginated response
-        const filteredChats = response.items.filter(chat => {
-          // Only show chats that belong to this subcluster
-          return chat.subcategories &&
-              chat.subcategories.includes(subCluster);
-        });
-
-        setChats(filteredChats)
-        setTotal(filteredChats.length)
+        setChats([]);
+        setTotal(0);
       }
     } catch (error) {
       console.error("Error fetching chats:", error)
@@ -113,7 +105,15 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
   if (chats.length === 0) {
     return (
         <div className="text-center py-8">
-          <p className="text-muted-foreground">Нет чатов для подкатегории "{subCluster}" в выбранный период</p>
+          <p className="text-muted-foreground">
+            {subCluster
+                ? `Нет чатов для подкатегории "${subCluster}" в выбранный период`
+                : `Нет чатов для категории "${cluster}" в выбранный период`}
+          </p>
+          <Button variant="outline" onClick={fetchChats} className="mt-4">
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Обновить данные
+          </Button>
         </div>
     )
   }
@@ -121,7 +121,9 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
   return (
       <div className="overflow-x-auto">
         <div className="text-sm text-muted-foreground mb-2">
-          {total > 0 ? `Найдено ${total} чатов в подкатегории "${subCluster}". Нажмите на чат для просмотра диалога` : 'Нет чатов для отображения'}
+          {total > 0
+              ? `Найдено ${total} чатов в ${subCluster ? `подкатегории "${subCluster}"` : `категории "${cluster}"`}. Нажмите на чат для просмотра диалога`
+              : 'Нет чатов для отображения'}
         </div>
 
         {/* Desktop Table */}
@@ -145,20 +147,24 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
                       onClick={() => handleViewChat(chat.id)}
                   >
                     <TableCell className="font-medium">{chat.title}</TableCell>
-                    <TableCell>{chat.user}</TableCell>
+                    <TableCell>
+                      {typeof chat.user === 'string'
+                          ? chat.user
+                          : chat.user?.username || chat.user?.email || "Неизвестно"}
+                    </TableCell>
                     <TableCell>{formatDate(chat.created_at)}</TableCell>
                     <TableCell>{formatDate(chat.updated_at)}</TableCell>
-                    <TableCell>{chat.message_count}</TableCell>
+                    <TableCell>{chat.message_count || chat.messages?.length || 0}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-3">
-                    <span className="flex items-center gap-1">
-                      <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
-                      {chat.likes || 0}
-                    </span>
                         <span className="flex items-center gap-1">
-                      <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
+                          <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
+                          {chat.likes || 0}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
                           {chat.dislikes || 0}
-                    </span>
+                        </span>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -178,7 +184,9 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
                 <div className="font-medium mb-2">{chat.title}</div>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div className="text-muted-foreground">Пользователь:</div>
-                  <div>{chat.user}</div>
+                  <div>{typeof chat.user === 'string'
+                      ? chat.user
+                      : chat.user?.username || chat.user?.email || "Неизвестно"}</div>
 
                   <div className="text-muted-foreground">Создан:</div>
                   <div>{formatDate(chat.created_at)}</div>
@@ -187,18 +195,18 @@ export function ChatsList({ dateRange, cluster, subCluster }: ChatsListProps) {
                   <div>{formatDate(chat.updated_at)}</div>
 
                   <div className="text-muted-foreground">Сообщений:</div>
-                  <div>{chat.message_count}</div>
+                  <div>{chat.message_count || chat.messages?.length || 0}</div>
 
                   <div className="text-muted-foreground">Оценка:</div>
                   <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1">
-                  <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
-                  {chat.likes || 0}
-                </span>
                     <span className="flex items-center gap-1">
-                  <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
+                      <ThumbsUp size={14} className="text-green-500 dark:text-green-400" />
+                      {chat.likes || 0}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <ThumbsDown size={14} className="text-red-500 dark:text-red-400" />
                       {chat.dislikes || 0}
-                </span>
+                    </span>
                   </div>
                 </div>
               </div>

@@ -27,10 +27,15 @@ export class WebSocketService {
     private pongTimeout: NodeJS.Timeout | null = null;
     private connectingPromise: Promise<boolean> | null = null;
     private connectingResolve: ((value: boolean) => void) | null = null;
+    private isNewChat: boolean = false;
 
     constructor(chatId: string, token: string) {
         this.chatId = chatId;
         this.token = token;
+    }
+
+    public setNewChatFlag(isNewChat: boolean): void {
+        this.isNewChat = isNewChat;
     }
 
     public connect(): Promise<boolean> {
@@ -62,10 +67,16 @@ export class WebSocketService {
                     return;
                 }
 
-                console.log(`Connecting to WebSocket: ${WS_BASE_URL}/chat/${this.chatId}`);
+                // Add new_chat flag as query parameter if this is a new chat
+                let wsUrl = `${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`;
+                if (this.isNewChat) {
+                    wsUrl += '&new_chat=true';
+                }
+
+                console.log(`Connecting to WebSocket: ${wsUrl}`);
 
                 // Create a new WebSocket
-                this.socket = new WebSocket(`${WS_BASE_URL}/chat/${this.chatId}?token=${this.token}`);
+                this.socket = new WebSocket(wsUrl);
 
                 // Set up event handlers
                 this.socket.onopen = this.handleOpen.bind(this);
@@ -153,6 +164,12 @@ export class WebSocketService {
         });
     }
 
+    public requestSuggestions(): void {
+        this.sendMessage({
+            type: 'get_suggestions'
+        });
+    }
+
     public getState(): WebSocketState | null {
         return this.socket?.readyState ?? null;
     }
@@ -222,6 +239,13 @@ export class WebSocketService {
 
         // Start ping interval
         this.startPingInterval();
+
+        // For new chats, request suggestions immediately
+        if (this.isNewChat) {
+            setTimeout(() => {
+                this.requestSuggestions();
+            }, 500);
+        }
 
         // Notify listeners
         this.connectionListeners.forEach(listener => listener());

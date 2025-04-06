@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ThumbsUp, ThumbsDown, Copy, FileText, FileImage, File, Download, ExternalLink } from "lucide-react";
-import { extractDocumentReferences } from "@/lib/utils";
 import { formatDate } from "@/lib/utils";
 import { ChatMessage as ChatMessageType, MessageType } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -18,7 +17,7 @@ interface MessageProps {
 }
 
 export function ChatMessage({ message, onReaction, isTyping = false, typingContent = "" }: MessageProps) {
-    const { id, content, message_type, created_at, reactions, files } = message;
+    const { id, content, message_type, created_at, reactions, files, sources } = message;
 
     // Make case-insensitive comparisons for consistent behavior
     const messageTypeLower = typeof message_type === 'string' ? message_type.toLowerCase() : '';
@@ -85,43 +84,12 @@ export function ChatMessage({ message, onReaction, isTyping = false, typingConte
         }
     };
 
-    // Process document references to replace with links
-    const processDocumentReferences = useCallback((content: string) => {
-        if (!content || !content.includes("[doc:")) return content;
-
-        // If already processed, return from cache
-        if (processedContentRef.current) {
-            return processedContentRef.current;
-        }
-
-        const docRefs = extractDocumentReferences(content);
-        let processedContent = content;
-
-        // Replace document references with markdown links
-        docRefs.forEach(ref => {
-            const pattern = `\\[doc:${ref.id}\\]\\(${ref.text}\\)`;
-            const regex = new RegExp(pattern, 'g');
-            processedContent = processedContent.replace(
-                regex,
-                `[📄 ${ref.text}](${FileApi.getFileDownloadUrl(ref.id)})`
-            );
-        });
-
-        // Cache the processed content
-        processedContentRef.current = processedContent;
-        return processedContent;
-    }, []);
-
     // Determine content for rendering
     const contentToRender = useCallback(() => {
         // If typing, use typing content if available, otherwise use message content
         const baseContent = isTyping ? (typingContent || content) : content;
-
-        // If no content, return empty string
-        if (!baseContent) return "";
-
-        return processDocumentReferences(baseContent);
-    }, [isTyping, typingContent, content, processDocumentReferences]);
+        return baseContent || "";
+    }, [isTyping, typingContent, content]);
 
     // Render message content, handling typing state and markdown
     const renderMessageContent = () => {
@@ -137,7 +105,13 @@ export function ChatMessage({ message, onReaction, isTyping = false, typingConte
             );
         }
 
-        return <MarkdownRenderer content={contentToRender()} />;
+        return (
+            <MarkdownRenderer
+                content={contentToRender()}
+                messageId={id}
+                sources={sources}
+            />
+        );
     };
 
     // Render file attachments if any
@@ -213,7 +187,7 @@ export function ChatMessage({ message, onReaction, isTyping = false, typingConte
             <div className="flex justify-center my-6 px-4">
                 <div className="w-full max-w-3xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg px-6 py-3 text-center">
                     <div className="text-amber-700 dark:text-amber-400 text-sm">
-                        <MarkdownRenderer content={content} />
+                        <MarkdownRenderer content={content} messageId={id} sources={sources} />
                     </div>
                 </div>
             </div>

@@ -147,40 +147,52 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
       const startDate = format(dateRange.from, "yyyy-MM-dd");
       const endDate = format(dateRange.to, "yyyy-MM-dd");
 
-      // First fetch the bar data
-      const clustersResponse = parentCluster
-          ? await adminApi.getClusters(parentCluster)
-          : await adminApi.getClusters();
-
-      console.log("Clusters response:", clustersResponse);
-
-      let clusters: ClusterStat[] = [];
-
-      // Determine which data to use based on response structure
+      // First fetch the bar data (clusters or subclusters based on parent)
+      let clusterResponse;
       if (parentCluster) {
-        if (clustersResponse.sub_clusters && Array.isArray(clustersResponse.sub_clusters)) {
-          // Filter out any subclusters with zero requests
-          clusters = clustersResponse.sub_clusters.filter(item => item.requests > 0);
+        console.log(`Fetching subclusters for parent: ${parentCluster}`);
+        clusterResponse = await adminApi.getClusters(parentCluster);
+      } else {
+        console.log("Fetching general clusters");
+        clusterResponse = await adminApi.getClusters();
+      }
+
+      console.log("Clusters response:", clusterResponse);
+
+      let clustersData: ClusterStat[] = [];
+
+      if (parentCluster) {
+        // For subclusters, use the sub_clusters array
+        if (clusterResponse.sub_clusters && Array.isArray(clusterResponse.sub_clusters)) {
+          // Include all subclusters in the visualization, even those with zero requests
+          clustersData = clusterResponse.sub_clusters;
+          console.log(`Loaded ${clustersData.length} subclusters for ${parentCluster}`);
+        } else {
+          console.warn("No subclusters found in response");
         }
       } else {
-        if (clustersResponse.general_clusters && Array.isArray(clustersResponse.general_clusters)) {
-          // Filter out any general clusters with zero requests
-          clusters = clustersResponse.general_clusters.filter(item => item.requests > 0);
+        // For top-level view, use general_clusters array
+        if (clusterResponse.general_clusters && Array.isArray(clusterResponse.general_clusters)) {
+          clustersData = clusterResponse.general_clusters;
+          console.log(`Loaded ${clustersData.length} general clusters`);
+        } else {
+          console.warn("No general clusters found in response");
         }
       }
 
-      // Store the bar data
-      setBarData(clusters);
+      // Always set data even if empty - will handle empty case in rendering
+      setBarData(clustersData);
 
       // Then fetch time series data
       try {
         const timeseries = await adminApi.getClusterTimeseries(startDate, endDate, granularity);
         console.log("Timeseries data:", timeseries);
 
-        // Save all timeseries data, we'll filter it in useMemo
+        // Save timeseries data
         if (Array.isArray(timeseries)) {
           setTimeSeriesData(timeseries);
         } else {
+          console.warn("Timeseries response is not an array");
           setTimeSeriesData([]);
         }
       } catch (timeseriesError) {
@@ -203,7 +215,7 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
     setRetryCount(prev => prev + 1);
   };
 
-  // Get non-zero bar data
+  // Filter bar data to only include non-zero values for display
   const nonZeroBarData = useMemo(() => {
     return barData.filter(item => item.requests > 0);
   }, [barData]);
@@ -220,9 +232,12 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
   const hasBarData = nonZeroBarData.length > 0;
   const hasAreaData = nonZeroTimeSeriesData.length > 0 && areaChartClusters.length > 0;
 
+  // Handle bar click and pass the exact category name to parent component
   const handleBarClick = useCallback((data: any, index: number) => {
     if (data && data.name) {
+      console.log(`Bar clicked: ${data.name} at index ${index}`);
       setActiveIndex(index);
+      // Pass the exact category/cluster name to the parent
       onClusterClick(data.name);
     }
   }, [onClusterClick]);
@@ -247,6 +262,8 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
   const CustomBarTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload || !payload.length) return null;
 
+    // Calculate total for percentage calculation
+    // (only include displayed bars to match what user sees)
     const total = nonZeroBarData.reduce((sum, item) => sum + item.requests, 0);
 
     return (
@@ -367,17 +384,26 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
           </ResponsiveContainer>
       );
     } else {
+      // No data available for the selected view type
       return (
           <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-            <p className="text-muted-foreground mb-6">Нет данных для выбранного типа графика</p>
-            <Button
-                variant="outline"
-                onClick={toggleViewType}
-                className="flex items-center gap-2"
-            >
-              {viewType === "area" ? <BarChart2 size={16} /> : <LineChartIcon size={16} />}
-              {viewType === "area" ? "Переключить на гистограмму" : "Переключить на график"}
-            </Button>
+            <p className="text-muted-foreground mb-6">
+              {barData.length > 0
+                  ? "Нет данных для выбранного типа графика"
+                  : parentCluster
+                      ? `Нет подкатегорий с данными для категории "${parentCluster}"`
+                      : "Нет категорий с данными"}
+            </p>
+            {viewType === "area" && (
+                <Button
+                    variant="outline"
+                    onClick={toggleViewType}
+                    className="flex items-center gap-2"
+                >
+                  <BarChart2 size={16} />
+                  Переключить на гистограмму
+                </Button>
+            )}
           </div>
       );
     }
@@ -386,10 +412,10 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
   // Check if we have any data to display
   const hasData = hasBarData || hasAreaData;
 
-  if (error || !hasData) {
+  if (error) {
     return (
         <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-          <p className="text-muted-foreground mb-6">{error || "Нет данных для отображения"}</p>
+          <p className="text-muted-foreground mb-6">{error}</p>
           <Button variant="outline" onClick={handleRefresh} className="flex items-center gap-2">
             <RefreshCw size={16} />
             Обновить данные
@@ -433,19 +459,21 @@ export function ClusterRequestsChart({ dateRange, parentCluster, onClusterClick 
           </div>
 
           {/* View type toggle */}
-          <Button variant="outline" size="sm" onClick={toggleViewType} className="flex items-center gap-2">
-            {viewType === "area" ? (
-                <>
-                  <BarChart2 size={16} />
-                  <span className="hidden sm:inline">Гистограмма</span>
-                </>
-            ) : (
-                <>
-                  <LineChartIcon size={16} />
-                  <span className="hidden sm:inline">График</span>
-                </>
-            )}
-          </Button>
+          {hasData && (
+              <Button variant="outline" size="sm" onClick={toggleViewType} className="flex items-center gap-2">
+                {viewType === "area" ? (
+                    <>
+                      <BarChart2 size={16} />
+                      <span className="hidden sm:inline">Гистограмма</span>
+                    </>
+                ) : (
+                    <>
+                      <LineChartIcon size={16} />
+                      <span className="hidden sm:inline">График</span>
+                    </>
+                )}
+              </Button>
+          )}
         </div>
 
         {/* Render the appropriate chart */}

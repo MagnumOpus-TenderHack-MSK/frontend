@@ -195,6 +195,17 @@ export class ChatApi {
             throw error;
         }
     }
+
+    static async getChatSuggestions(chatId: string): Promise<string[]> {
+        try {
+            const response = await ApiService.get<string[]>(`/chats/${chatId}/suggestions`);
+            console.log(`Retrieved suggestions for chat ${chatId}:`, response);
+            return response;
+        } catch (error) {
+            console.error(`Error fetching suggestions for chat ${chatId}:`, error);
+            return [];
+        }
+    }
 }
 
 export default ChatApi;

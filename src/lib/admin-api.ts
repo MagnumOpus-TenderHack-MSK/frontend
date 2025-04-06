@@ -5,8 +5,8 @@ export interface ClusterStat {
 }
 
 export interface ClustersResponse {
-    general_clusters: ClusterStat[];
-    sub_clusters: ClusterStat[];
+    general_clusters?: ClusterStat[];
+    sub_clusters?: ClusterStat[];
 }
 
 export interface TimeseriesData {
@@ -25,7 +25,11 @@ export interface AdminStats {
 export interface AdminChat {
     id: string;
     title: string;
-    user: string;
+    user: string | {
+        id: string;
+        username: string;
+        email: string;
+    };
     categories: string[];
     subcategories: string[];
     created_at: string;
@@ -103,6 +107,12 @@ const getAuthHeaders = (): HeadersInit => {
 const handleApiResponse = async <T>(response: Response, fallback: T): Promise<T> => {
     if (!response.ok) {
         console.error(`API error: ${response.status} ${response.statusText}`);
+        try {
+            const errorText = await response.text();
+            console.error(`Error response: ${errorText}`);
+        } catch (e) {
+            console.error("Could not read error response");
+        }
         return fallback;
     }
 
@@ -119,12 +129,17 @@ export const adminApi = {
     // Clusters endpoints
     getClusters: async (parentCluster?: string): Promise<ClustersResponse> => {
         try {
-            const query = parentCluster ? `?parentCluster=${encodeURIComponent(parentCluster)}` : '';
-            const res = await fetch(`${API_BASE_URL}/api/admin/clusters${query}`, {
+            // Properly encode the parentCluster parameter if provided
+            const params = parentCluster ? `?parentCluster=${encodeURIComponent(parentCluster)}` : '';
+            console.log(`Fetching clusters with params: ${params}`);
+
+            const res = await fetch(`${API_BASE_URL}/api/admin/clusters${params}`, {
                 headers: getAuthHeaders()
             });
 
-            return handleApiResponse(res, { general_clusters: [], sub_clusters: [] });
+            const result = await handleApiResponse(res, { general_clusters: [], sub_clusters: [] });
+            console.log("Clusters API result:", result);
+            return result;
         } catch (error) {
             console.error("Error fetching clusters:", error);
             return { general_clusters: [], sub_clusters: [] };
@@ -199,25 +214,30 @@ export const adminApi = {
             const query = new URLSearchParams();
             query.append('skip', skip.toString());
             query.append('limit', limit.toString());
+
+            // Ensure cluster and subCluster are properly encoded if provided
             if (cluster) query.append('cluster', cluster);
             if (subCluster) query.append('subCluster', subCluster);
             if (fromDate) query.append('from', fromDate);
             if (toDate) query.append('to', toDate);
 
-            const res = await fetch(`${API_BASE_URL}/api/admin/chats?${query.toString()}`, {
+            const apiUrl = `${API_BASE_URL}/api/admin/chats?${query.toString()}`;
+            console.log(`API call: GET ${apiUrl}`);
+
+            const res = await fetch(apiUrl, {
                 headers: getAuthHeaders()
             });
 
-            const data = await handleApiResponse(res, []);
+            // Log response status
+            console.log(`Response status: ${res.status}`);
 
-            // Handle both array response and paginated response
-            if (Array.isArray(data)) {
-                return {
-                    items: data,
-                    total: data.length
-                };
+            // If not found (404), return empty results instead of throwing an error
+            if (res.status === 404) {
+                console.warn("404 response from chats endpoint, returning empty results");
+                return { items: [], total: 0 };
             }
 
+            const data = await handleApiResponse(res, { items: [], total: 0 });
             return data;
         } catch (error) {
             console.error("Error fetching admin chats:", error);
