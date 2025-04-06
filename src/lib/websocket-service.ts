@@ -12,8 +12,8 @@ export enum WebSocketState {
 }
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
-const MAX_RECONNECT_ATTEMPTS = 3;
-const INITIAL_RECONNECT_INTERVAL = 3000; // 3 seconds
+const MAX_RECONNECT_ATTEMPTS = 30;
+const INITIAL_RECONNECT_INTERVAL = 500; // 3 seconds
 const MAX_RECONNECT_INTERVAL = 30000; // 30 seconds
 const RECONNECT_BACKOFF_MULTIPLIER = 1.5;
 const PING_INTERVAL = 45000; // 45 seconds

@@ -420,7 +420,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         chatNameUpdate,
         addMessageListener,
         removeMessageListener,
-        checkForCompletedMessages, // Keep exposing if needed externally
+        checkForCompletedMessages,
         clearSuggestions,
         clearLastCompletedMessage,
         clearChatNameUpdate,

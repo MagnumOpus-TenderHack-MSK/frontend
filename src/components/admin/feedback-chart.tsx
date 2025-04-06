@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"; // Added useCallback
+import { useState, useEffect, useCallback } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -8,11 +8,11 @@ import {
   Tooltip,
   Legend,
   Line
-} from "recharts"; // Use recharts directly
+} from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Clock, Calendar, RefreshCw } from "lucide-react"; // Added RefreshCw
-import { adminApi, FeedbackStat } from "@/lib/admin-api"; // Use FeedbackStat type
+import { Clock, Calendar, RefreshCw } from "lucide-react";
+import { adminApi, FeedbackStat } from "@/lib/admin-api";
 import { format } from "date-fns";
 
 interface FeedbackChartProps {
@@ -22,75 +22,83 @@ interface FeedbackChartProps {
 type GranularityType = "hour" | "day" | "week";
 
 export function FeedbackChart({ dateRange }: FeedbackChartProps) {
-  const [data, setData] = useState<FeedbackStat[]>([]); // Use FeedbackStat type
+  const [data, setData] = useState<FeedbackStat[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [granularity, setGranularity] = useState<GranularityType>("hour"); // Default to hourly
+  const [granularity, setGranularity] = useState<GranularityType>("hour");
   const [retryCount, setRetryCount] = useState(0);
+  // Add state to track if the data received only contains zeros
+  const [allDataIsZero, setAllDataIsZero] = useState(false);
 
-  // Format date label based on granularity
   const formatDateLabel = useCallback((dateLabel: string) => {
     if (!dateLabel) return "";
     try {
       const date = new Date(dateLabel);
       if (granularity === "hour") return format(date, "HH:00");
-      if (granularity === "week") return `W${format(date, "w")}`; // Show Week number
-      return format(date, "MM/dd"); // Show Month/Day for daily
-    } catch (e) {
-      return dateLabel; // Fallback
-    }
+      if (granularity === "week") return `W${format(date, "w")}`;
+      return format(date, "MM/dd");
+    } catch (e) { return dateLabel; }
   }, [granularity]);
 
   const fetchFeedback = useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    setAllDataIsZero(false); // Reset zero flag
     try {
       const fromDate = format(dateRange.from, "yyyy-MM-dd");
       const toDate = format(dateRange.to, "yyyy-MM-dd");
 
-      console.log(`Fetching feedback stats from ${fromDate} to ${toDate}, granularity: ${granularity}`);
+      console.log(`Fetching feedback stats from ${fromDate} to ${toDate}, granularity: ${granularity}`); // Keep log
       const feedback = await adminApi.getFeedbackStats(fromDate, toDate, granularity);
-      console.log("Feedback API response:", feedback);
+      console.log("Feedback API response:", feedback); // Keep log
 
-      // Filter out entries where both likes and dislikes are zero for cleaner chart
-      const filteredFeedback = feedback.filter(item => item.likes > 0 || item.dislikes > 0);
+      // --- MODIFICATION START ---
+      // Always set the data received from the API
+      setData(feedback);
 
-      if (filteredFeedback.length === 0) {
-        setData([]); // Set empty data
-        setError("Нет данных об обратной связи для выбранного периода.");
-        console.log("No non-zero feedback data found.");
+      // Check if the API returned data and if all values are zero
+      if (feedback && feedback.length > 0) {
+        const allZero = feedback.every(item => item.likes === 0 && item.dislikes === 0);
+        setAllDataIsZero(allZero);
+        if (allZero) {
+          console.log("All feedback data points have zero likes/dislikes."); // Log info, don't error
+          // You could set a specific message here if needed, e.g., using setError
+          // setError("Нет оценок за выбранный период.");
+        } else {
+          console.log(`Displaying ${feedback.length} feedback data points (some non-zero).`);
+        }
       } else {
-        setData(filteredFeedback); // Set filtered data
-        console.log(`Displaying ${filteredFeedback.length} feedback data points.`);
+        console.log("Feedback API returned empty array or invalid data.");
+        setError("Нет данных об обратной связи для выбранного периода.");
       }
+      // --- MODIFICATION END ---
 
     } catch (error: any) {
       console.error("Error fetching feedback stats:", error);
       setError(error.message || "Failed to fetch feedback data");
-      setData([]); // Clear data on error
+      setData([]);
     } finally {
       setIsLoading(false);
     }
-  }, [dateRange, granularity, retryCount]); // Add retryCount dependency
+  }, [dateRange, granularity, retryCount]); // Keep dependencies
 
   useEffect(() => {
     fetchFeedback();
-  }, [fetchFeedback]); // Use the memoized fetch function
+  }, [fetchFeedback]);
 
   const changeGranularity = (newGranularity: GranularityType) => {
     setGranularity(newGranularity);
-    setRetryCount(prev => prev + 1); // Trigger refetch on granularity change
+    setRetryCount(prev => prev + 1);
   };
 
   const handleRefresh = () => {
-    setRetryCount(prev => prev + 1); // Trigger refetch
+    setRetryCount(prev => prev + 1);
   };
 
   if (isLoading) {
     return <Skeleton className="w-full h-[400px]" />;
   }
 
-  // Custom tooltip component (same as before)
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload || !payload.length) return null;
     let formattedDate = label;
@@ -126,7 +134,7 @@ export function FeedbackChart({ dateRange }: FeedbackChartProps) {
             <Button variant={granularity === "week" ? "default" : "outline"} size="sm" onClick={() => changeGranularity("week")} className="flex items-center gap-1"> <Calendar size={14} /> <span className="hidden sm:inline">Недели</span> </Button>
           </div>
           {/* Refresh button */}
-          {error && (
+          {(error || allDataIsZero) && ( // Show refresh if error OR if data is all zeros
               <Button variant="outline" size="sm" onClick={handleRefresh} className="flex items-center gap-1">
                 <RefreshCw size={14} /> <span className="hidden sm:inline">Обновить</span>
               </Button>
@@ -135,15 +143,19 @@ export function FeedbackChart({ dateRange }: FeedbackChartProps) {
 
         {/* Chart or Error/No Data Message */}
         <div className="flex-grow min-h-0">
-          {error && !isLoading ? (
+          {error && !isLoading ? ( // Show error message first
               <div className="flex flex-col items-center justify-center h-full text-center p-4">
                 <p className="text-red-500">{error}</p>
               </div>
-          ) : data.length === 0 && !isLoading ? (
+          ) : allDataIsZero && !isLoading ? ( // Show specific message if all data is zero
+              <div className="flex flex-col items-center justify-center h-full text-center p-4">
+                <p className="text-muted-foreground">Нет оценок за выбранный период.</p>
+              </div>
+          ) : data.length === 0 && !isLoading ? ( // Show generic no data message if API returned empty
               <div className="flex flex-col items-center justify-center h-full text-center p-4">
                 <p className="text-muted-foreground">Нет данных для отображения.</p>
               </div>
-          ) : (
+          ) : ( // Otherwise, render the chart
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data} margin={{ top: 5, right: 5, left: 5, bottom: 60 }} >
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />

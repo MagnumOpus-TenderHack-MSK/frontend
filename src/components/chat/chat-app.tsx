@@ -1,7 +1,5 @@
-// src/components/chat/chat-app.tsx
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Shield, X, Menu, LogOut, WifiOff, AlertTriangle } from "lucide-react";
-import Link from "next/link";
+import React, { useState, useEffect, useCallback } from "react";
+import { Menu, X, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ChatSidebar } from "./chat-sidebar";
@@ -17,14 +15,11 @@ import {
     ReactionType,
     FileType,
     MessageStatus,
-    Source,
-    MessageType
 } from "@/lib/types";
 import { ChatApi } from "@/lib/chat-api";
 import { FileApi } from "@/lib/file-api";
-import { WebSocketState } from "@/lib/websocket-service";
 
-// Default suggestions remain the same...
+// Default suggestions for new users
 const DEFAULT_SUGGESTIONS: MessageSuggestion[] = [
     { id: "default-sug-1", text: "Как зарегистрироваться на портале?", icon: "user-plus" },
     { id: "default-sug-2", text: "Как найти активные закупки?", icon: "search" },
@@ -35,34 +30,37 @@ const DEFAULT_SUGGESTIONS: MessageSuggestion[] = [
 
 function getIconForSuggestion(text: string): string {
     const textLower = text.toLowerCase();
-    if (textLower.includes('регистрац') || textLower.includes('аккаунт')) return 'user-plus';
-    if (textLower.includes('поиск') || textLower.includes('найти')) return 'search';
-    if (textLower.includes('что такое') || textLower.includes('как ') || textLower.includes('почему')) return 'help-circle';
-    if (textLower.includes('документ') || textLower.includes('файл') || textLower.includes('подать')) return 'file-text';
-    if (textLower.includes('ошибк') || textLower.includes('проблем') || textLower.includes('не работает')) return 'alert-triangle';
+
+    if (textLower.includes('регистрац') || textLower.includes('аккаунт')) {
+        return 'user-plus';
+    } else if (textLower.includes('поиск') || textLower.includes('найти')) {
+        return 'search';
+    } else if (textLower.includes('что такое') || textLower.includes('как ') || textLower.includes('почему')) {
+        return 'help-circle';
+    } else if (textLower.includes('документ') || textLower.includes('файл') || textLower.includes('подать')) {
+        return 'file-text';
+    } else if (textLower.includes('ошибк') || textLower.includes('проблем') || textLower.includes('не работает')) {
+        return 'alert-triangle';
+    }
+
     return 'message-square';
 }
 
-
+// Inner component to use the WebSocket context
 const ChatAppContent = () => {
     const { user, logout } = useAuth();
     const {
         connectWebSocket,
         disconnectWebSocket,
         isConnected,
-        connectionState,
         isTyping,
-        expectingAiResponse,
         pendingMessageId,
         streamedContent,
+        lastCompletedMessage,
         chatSuggestions,
         chatNameUpdate,
-        lastCompletedMessage,
         clearSuggestions,
         clearLastCompletedMessage,
-        clearChatNameUpdate,
-        startExpectingAiResponse,
-        lastConnectionError,
     } = useWebSocket();
 
     const [mounted, setMounted] = useState(false);
@@ -70,158 +68,205 @@ const ChatAppContent = () => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [chatHistory, setChatHistory] = useState<Chat[]>([]);
     const [isLoadingChats, setIsLoadingChats] = useState(true);
-    const [isLoadingMessages, setIsLoadingMessages] = useState(false);
     const [initialSuggestions, setInitialSuggestions] = useState<MessageSuggestion[]>(DEFAULT_SUGGESTIONS);
+    const [inputSuggestions, setInputSuggestions] = useState<MessageSuggestion[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [fileUploadProgress, setFileUploadProgress] = useState<number | null>(null);
-
-    const initialLoadCompleteRef = useRef(false);
-    const connectingChatIdRef = useRef<string | null>(null); // Ref to prevent race conditions during connection
-
+    const [messagesLoaded, setMessagesLoaded] = useState<Record<string, boolean>>({});
 
     const currentChat = activeChat
         ? chatHistory.find((chat) => chat.id === activeChat)
         : null;
 
-    // --- Effect to handle chat name updates ---
+    // Update chat title when we receive a new title from AI
     useEffect(() => {
         if (chatNameUpdate && activeChat) {
-            const chatIndex = chatHistory.findIndex(chat => chat.id === activeChat);
-            if (chatIndex === -1) return; // Chat not found
-
-            const currentTitle = chatHistory[chatIndex].title;
-            const isDefaultTitle = currentTitle === "Новый чат" || !currentTitle;
-
-            if (isDefaultTitle) {
-                console.log(`ChatApp: Updating title for chat ${activeChat} to: ${chatNameUpdate}`);
-                setChatHistory(prevHistory => {
-                    const newHistory = prevHistory.map(chat =>
-                        chat.id === activeChat ? { ...chat, title: chatNameUpdate } : chat
-                    );
-                    // Re-sort after title update to maintain order
-                    return newHistory.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-                });
-                clearChatNameUpdate(); // Clear after applying
-            } else {
-                console.log(`ChatApp: Skipping title update for chat ${activeChat}, current title is not default: ${currentTitle}`);
-                clearChatNameUpdate(); // Clear even if not applied
-            }
+            setChatHistory(prevHistory =>
+                prevHistory.map(chat =>
+                    chat.id === activeChat ?
+                        {...chat, title: chatNameUpdate} :
+                        chat
+                )
+            );
         }
-    }, [chatNameUpdate, activeChat, chatHistory, clearChatNameUpdate]); // Ensure chatHistory is a dependency if used for finding index
+    }, [chatNameUpdate, activeChat]);
 
-
-    // Function to load chat list
-    const loadChats = useCallback(async () => {
-        // Prevent reload if already loading
-        if (isLoadingChats) return;
-
-        console.log("ChatApp: Loading chat list...");
-        setIsLoadingChats(true);
-        setError(null);
+    const loadChats = async () => {
         try {
+            setIsLoadingChats(true);
+            setError(null);
             const response = await ChatApi.getChats();
+
+            // Sort chats by updated_at (newest first)
             const sortedChats = [...response.items].sort(
                 (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
             );
+
             setChatHistory(sortedChats);
 
-            if (sortedChats.length > 0 && (!activeChat || !sortedChats.some(c => c.id === activeChat))) {
-                const initialChatId = sortedChats[0].id;
-                console.log(`ChatApp: Setting initial active chat to ${initialChatId}`);
-                setActiveChat(initialChatId);
-            } else if (sortedChats.length === 0) {
-                console.log("ChatApp: No chats found, setting active chat to null");
-                setActiveChat(null);
+            if (sortedChats.length > 0 && !activeChat) {
+                setActiveChat(sortedChats[0].id);
             }
-            initialLoadCompleteRef.current = true;
-
-        } catch (err: any) {
-            console.error("ChatApp: Error loading chats:", err);
-            setError(err.message || "Failed to load chats.");
+        } catch (err) {
+            console.error("Error loading chats:", err);
+            setError("Failed to load chats. Please try again later.");
         } finally {
             setIsLoadingChats(false);
         }
-    }, [activeChat, isLoadingChats]); // Dependencies
+    };
 
-    // Function to load messages for a specific chat
-    const loadChatMessages = useCallback(async (chatId: string) => {
-        if (isLoadingMessages) return []; // Prevent concurrent loading
-
-        console.log(`ChatApp: Loading messages for chat ${chatId}...`);
-        setIsLoadingMessages(true); // Set loading true *before* API call
-        setError(null);
+    const loadChat = async (chatId: string) => {
         try {
+            setError(null);
+
+            // Check if messages were already loaded
+            const existingChat = chatHistory.find((c) => c.id === chatId);
+            const hasMessages = existingChat && existingChat.messages && existingChat.messages.length > 0;
+
+            // Always reload messages to ensure we have the latest
             const messageResponse = await ChatApi.getChatMessages(chatId);
-            const fetchedMessages = messageResponse.items || [];
+
+            // Store that messages were loaded for this chat
+            setMessagesLoaded(prev => ({...prev, [chatId]: true}));
+
+            // Try to fetch suggestions for this chat
+            try {
+                const suggestions = await ChatApi.getChatSuggestions(chatId);
+                if (suggestions && Array.isArray(suggestions) && suggestions.length > 0) {
+                    console.log(`Fetched ${suggestions.length} suggestions for chat ${chatId}`);
+
+                    // Transform suggestions into the expected format with icons
+                    const formattedSuggestions = suggestions.map((text, index) => ({
+                        id: `suggestion-${Date.now()}-${index}`,
+                        text,
+                        icon: getIconForSuggestion(text) // Using your existing icon detection function
+                    }));
+
+                    // Set these as input suggestions or update the WebSocket context
+                    setInputSuggestions(formattedSuggestions);
+                }
+            } catch (suggestionError) {
+                console.warn("Error fetching suggestions:", suggestionError);
+                // Non-critical error, continue with chat loading
+            }
 
             setChatHistory((prev) =>
-                prev.map((chat) =>
-                    chat.id === chatId ? { ...chat, messages: fetchedMessages } : chat
-                )
+                prev.map((chat) => {
+                    if (chat.id === chatId) {
+                        // If chat has suggestions, store them
+                        const updatedChat = {
+                            ...chat,
+                            messages: messageResponse.items
+                        };
+
+                        return updatedChat;
+                    }
+                    return chat;
+                })
             );
-            console.log(`ChatApp: Loaded ${fetchedMessages.length} messages for chat ${chatId}`);
-            return fetchedMessages;
-        } catch (err: any) {
-            console.error(`ChatApp: Error loading messages for chat ${chatId}:`, err);
-            setError(err.message || "Failed to load chat messages.");
-            return []; // Return empty on error
-        } finally {
-            setIsLoadingMessages(false); // Set loading false *after* API call completes/fails
+
+            return messageResponse.items;
+        } catch (err) {
+            console.error(`Error loading chat ${chatId}:`, err);
+            setError("Failed to load chat messages. Please try again later.");
+            return [];
         }
-    }, [isLoadingMessages]); // Dependency
+    };
 
-
-    // Function to create a new chat
-    const createNewChat = useCallback(async () => {
-        console.log("ChatApp: Creating new chat...");
-        setError(null);
-        setIsLoadingChats(true); // Indicate loading while creating
+    const createNewChat = async () => {
         try {
+            setError(null);
             const newChat = await ChatApi.createChat({ title: "Новый чат" });
-            console.log(`ChatApp: New chat created with ID ${newChat.id}`);
-            setChatHistory((prev) => [newChat, ...prev]);
-            setActiveChat(newChat.id.toString());
+            setChatHistory((prev) => [...prev, newChat]);
+            setActiveChat(newChat.id);
             setSidebarOpen(false);
-        } catch (err: any) {
-            console.error("ChatApp: Error creating new chat:", err);
-            setError(err.message || "Failed to create new chat.");
-        } finally {
-            setIsLoadingChats(false); // Stop loading indicator
-        }
-    }, []);
 
-    // Function to handle switching chats
-    const handleChatSelect = useCallback(async (chatId: string) => {
-        // Prevent selecting the same chat or selecting while connecting
-        if (activeChat === chatId || connectingChatIdRef.current === chatId) {
-            console.log(`ChatApp: Skipping chat select for ${chatId} (already active or connecting)`);
+            // Mark as messages loaded (even though it's empty)
+            setMessagesLoaded(prev => ({...prev, [newChat.id]: true}));
+
+            // Connect to WebSocket for the new chat
+            connectWebSocket(newChat.id);
+        } catch (err) {
+            console.error("Error creating new chat:", err);
+            setError("Failed to create new chat. Please try again later.");
+        }
+    };
+
+    const handleChatSelect = async (chatId: string) => {
+        if (activeChat === chatId) return;
+
+        // Disconnect from current WebSocket connection first
+        if (activeChat && isConnected) {
+            disconnectWebSocket();
+        }
+
+        setActiveChat(chatId);
+        setSidebarOpen(false);
+
+        // Clear suggestions when switching chats
+        clearSuggestions();
+
+        // Load messages first before connecting to WebSocket
+        const messages = await loadChat(chatId);
+
+        // Check if there's an in-progress message
+        const hasInProgressMessage = messages.some(msg =>
+            msg.message_type === "ai" &&
+            (msg.status === MessageStatus.PENDING || msg.status === MessageStatus.PROCESSING)
+        );
+
+        // Connect to WebSocket to receive updates - pass false to indicate this is not a new chat
+        connectWebSocket(chatId, false);
+    };
+
+    const generateRelevantSuggestions = (message: string) => {
+        const registrationKeywords = ["регистрация", "зарегистрироваться", "аккаунт", "создать"];
+        const techSupportKeywords = ["ошибка", "проблема", "не работает", "техническая"];
+        const procurementKeywords = ["закупка", "поставка", "тендер", "аукцион", "оферта"];
+        const lowercaseMessage = message.toLowerCase();
+        if (registrationKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
+            setInputSuggestions([
+                { id: `sug-reg-1-${Date.now()}`, text: "Какие документы нужны для регистрации?", icon: "file-text" },
+                { id: `sug-reg-2-${Date.now()}`, text: "Как долго рассматривается заявка?", icon: "help-circle" },
+                { id: `sug-reg-3-${Date.now()}`, text: "Что делать если отклонили заявку?", icon: "alert-triangle" },
+            ]);
             return;
         }
-        console.log(`ChatApp: Selecting chat ${chatId}`);
-
-        connectingChatIdRef.current = chatId; // Mark as attempting to switch/connect
-        setSidebarOpen(false);
-        setActiveChat(chatId); // Optimistically set active chat
-
-        // Load messages if they aren't already loaded or present
-        const chat = chatHistory.find(c => c.id === chatId);
-        if (chat && (!chat.messages || chat.messages.length === 0)) {
-            await loadChatMessages(chatId);
+        if (techSupportKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
+            setInputSuggestions([
+                { id: `sug-tech-1-${Date.now()}`, text: "Не загружаются документы", icon: "alert-triangle" },
+                { id: `sug-tech-2-${Date.now()}`, text: "Как сбросить пароль?", icon: "help-circle" },
+                { id: `sug-tech-3-${Date.now()}`, text: "Не приходят уведомления", icon: "alert-triangle" },
+            ]);
+            return;
         }
-        // Clear the ref *after* potential loading is done
-        connectingChatIdRef.current = null;
+        if (procurementKeywords.some((keyword) => lowercaseMessage.includes(keyword))) {
+            setInputSuggestions([
+                { id: `sug-proc-1-${Date.now()}`, text: "Как найти актуальные закупки?", icon: "search" },
+                { id: `sug-proc-2-${Date.now()}`, text: "Что такое котировочная сессия?", icon: "help-circle" },
+                { id: `sug-proc-3-${Date.now()}`, text: "Как подать заявку на участие?", icon: "file-text" },
+            ]);
+            return;
+        }
+        setInputSuggestions([]);
+    };
 
-    }, [activeChat, loadChatMessages, chatHistory]);
-
-    // Deduplicate and sort messages helper function
     const deduplicateAndSortMessages = useCallback((messages: ChatMessage[] = []) => {
         const uniqueMessages = new Map<string, ChatMessage>();
         messages.forEach(newMessage => {
             const existingMessage = uniqueMessages.get(newMessage.id);
-            if (!existingMessage || !newMessage.id.startsWith('temp-') || (newMessage.content && newMessage.content !== existingMessage.content)) {
+
+            if (!existingMessage) {
+                // If no message with this ID exists, add the new one
                 uniqueMessages.set(newMessage.id, newMessage);
-            } else if (!uniqueMessages.has(newMessage.id)) {
-                uniqueMessages.set(newMessage.id, existingMessage);
+            } else {
+                // If a message with this ID exists...
+                // Only replace the existing message if the new message is NOT temporary.
+                // This ensures a 'real' message always overwrites a 'temporary' one.
+                if (!newMessage.id.startsWith('temp-')) {
+                    uniqueMessages.set(newMessage.id, newMessage);
+                }
+                // If newMessage IS temporary, we implicitly keep the existing one.
             }
         });
         return Array.from(uniqueMessages.values()).sort(
@@ -229,414 +274,424 @@ const ChatAppContent = () => {
         );
     }, []);
 
+    const handleSendMessage = async (message: string, files?: File[]) => {
+        if ((!message || !message.trim()) && (!files || files.length === 0)) return;
 
-    // Function to send a message within a specific chat
-    const sendMessageToChat = useCallback(async (
+        try {
+            setError(null);
+            console.log(`Sending message: "${message}" with ${files?.length || 0} files`);
+            let fileIds: string[] = [];
+            let fileReferences: any[] = [];
+
+            // Handle file uploads
+            if (files && files.length > 0) {
+                try {
+                    setFileUploadProgress(0);
+                    console.log("Uploading files...");
+
+                    for (let i = 0; i < files.length; i++) {
+                        const file = files[i];
+                        const onProgress = (progress: number) => {
+                            setFileUploadProgress(Math.round((i / files.length) * 100 + progress / files.length));
+                        };
+
+                        try {
+                            const uploadedFile = await FileApi.uploadFile(file, onProgress);
+                            fileIds.push(uploadedFile.id);
+                            fileReferences.push({
+                                id: uploadedFile.id,
+                                name: uploadedFile.name || file.name,
+                                file_type: uploadedFile.file_type || FileType.OTHER,
+                                preview_url: uploadedFile.preview_url,
+                            });
+                        } catch (fileError) {
+                            console.error(`Error uploading file ${file.name}:`, fileError);
+                        }
+                    }
+
+                    setFileUploadProgress(null);
+                } catch (error) {
+                    console.error("Error uploading files:", error);
+                    setError("Failed to upload files. Please try again.");
+                    setFileUploadProgress(null);
+                    return;
+                }
+            }
+
+            // Create new chat or use existing chat
+            if (!activeChat) {
+                console.log("Creating new chat...");
+                const chatTitle = message.length > 20 ? message.substring(0, 20) + "..." : message;
+                const newChat = await ChatApi.createChat({ title: chatTitle });
+                console.log(`New chat created: ${newChat.id}`);
+
+                // Add to chat history immediately to prevent duplication
+                setChatHistory(prev => {
+                    // Check if chat with this ID already exists
+                    if (prev.some(c => c.id === newChat.id)) {
+                        return prev;
+                    }
+                    return [...prev, newChat];
+                });
+
+                setActiveChat(newChat.id);
+                setMessagesLoaded(prev => ({...prev, [newChat.id]: true}));
+                connectWebSocket(newChat.id);
+
+                // Wait for connection to establish
+                await new Promise(resolve => setTimeout(resolve, 500));
+                await sendMessageToChat(newChat.id, message, fileIds, fileReferences);
+            } else {
+                console.log(`Sending to existing chat: ${activeChat}`);
+                await sendMessageToChat(activeChat, message, fileIds, fileReferences);
+            }
+
+            generateRelevantSuggestions(message);
+            setSidebarOpen(false);
+            setInputSuggestions([]);
+        } catch (error) {
+            console.error("Error sending message:", error);
+            setError("Failed to send message. Please try again.");
+            setFileUploadProgress(null);
+        }
+    };
+
+    const sendMessageToChat = async (
         chatId: string,
         content: string,
         fileIds: string[] = [],
         fileReferences: any[] = []
-    ): Promise<string | null> => { // Return potential AI message ID
-        let optimisticAiMessageId: string | null = null;
-        let userMessageId: string = `temp-user-${Date.now()}`; // Define user temp ID here
-
+    ) => {
         try {
-            // Create optimistic user message structure
-            const optimisticUserMessage: ChatMessage = {
-                id: userMessageId, chat_id: chatId, content, message_type: MessageType.USER,
-                status: MessageStatus.COMPLETED, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-                files: fileReferences.length > 0 ? fileReferences.map(f => ({...f, id: f.id.toString()})) : [],
-                sources: [], reactions: [],
+            // Add optimistic message to UI
+            const optimisticMessage: ChatMessage = {
+                id: `temp-${Date.now()}`,
+                chat_id: chatId,
+                content,
+                message_type: "USER",
+                status: MessageStatus.COMPLETED,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                files: fileReferences.length > 0 ? fileReferences : undefined,
             };
 
-            // Check for support request *before* adding optimistic AI
-            const isSupportRequest = ["оператор", "поддержк", "консультант", "помощник", "специалист"]
-                .some(keyword => content.toLowerCase().includes(keyword));
-
-            const optimisticMessagesToAdd = [optimisticUserMessage];
-            if (!isSupportRequest) {
-                optimisticAiMessageId = `temp-ai-${Date.now()}`;
-                const optimisticAiMessage: ChatMessage = {
-                    id: optimisticAiMessageId, chat_id: chatId, content: "", message_type: MessageType.AI,
-                    status: MessageStatus.PENDING, created_at: new Date(Date.now() + 1).toISOString(),
-                    updated_at: new Date(Date.now() + 1).toISOString(), sources: [], files: [], reactions: [],
-                };
-                optimisticMessagesToAdd.push(optimisticAiMessage);
-                console.log(`ChatApp: Adding optimistic AI message ${optimisticAiMessageId}`);
-            }
-
-            // === Batch State Update ===
-            setChatHistory((prev) => {
-                const chatIndex = prev.findIndex(chat => chat.id === chatId);
-                if (chatIndex === -1) return prev;
-
-                const updatedChat = { ...prev[chatIndex] };
-                const existingMessages = updatedChat.messages || [];
-                updatedChat.messages = deduplicateAndSortMessages([...existingMessages, ...optimisticMessagesToAdd]);
-                updatedChat.updated_at = new Date().toISOString();
-
-                if ((updatedChat.title === "Новый чат" || !updatedChat.title) && existingMessages.length === 0) {
-                    updatedChat.title = content.length > 30 ? content.substring(0, 30) + "..." : content;
-                }
-
-                const otherChats = prev.filter(chat => chat.id !== chatId);
-                return [updatedChat, ...otherChats];
-            });
-            // === End Batch State Update ===
-
-
-            // === API Call ===
-            console.log(`ChatApp: Sending message API request for chat ${chatId}...`);
-            const backendResponse = await ChatApi.sendMessage(chatId, { content, file_ids: fileIds });
-            console.log(`ChatApp: Message API request successful for chat ${chatId}. Backend user msg ID: ${backendResponse.id}`);
-            // === End API Call ===
-
-            // === Update State with Real User Message ID ===
-            // Replace the optimistic user message with the confirmed one from the backend
-            // We will remove the optimistic AI message *after* confirming the backend call,
-            // but before calling startExpectingAiResponse if needed.
             setChatHistory((prev) =>
                 prev.map((chat) => {
                     if (chat.id === chatId) {
-                        const finalMessages = (chat.messages || [])
-                            // Map: Replace temp user msg with backend confirmed msg
-                            .map(msg => msg.id === userMessageId ? { ...backendResponse, files: optimisticUserMessage.files } : msg)
-                            // Filter: Remove the temp AI msg if it exists *and* we added one
-                            .filter(msg => !(optimisticAiMessageId && msg.id === optimisticAiMessageId));
-                        return { ...chat, messages: finalMessages };
+                        const existingMessages = chat.messages || [];
+                        // Use the shared helper function
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, optimisticMessage]);
+
+                        const updatedChat = {
+                            ...chat,
+                            messages: updatedMessages,
+                            updated_at: new Date().toISOString(),
+                        };
+
+                        if (chat.title === "Новый чат" && !existingMessages.length) {
+                            updatedChat.title =
+                                content.length > 20 ? content.substring(0, 20) + "..." : content;
+                        }
+                        return updatedChat;
                     }
                     return chat;
                 })
             );
-            // === End State Update ===
 
+            // Send actual message to API
+            await ChatApi.sendMessage(chatId, {
+                content,
+                file_ids: fileIds.length > 0 ? fileIds : undefined,
+            });
+        } catch (error) {
+            console.error(`Error sending message to chat ${chatId}:`, error);
+            throw error; // Rethrow error to be caught by handleSendMessage
+        }
+    };
 
-            // Return the optimistic ID ONLY if we added one (and it wasn't a support request)
-            return isSupportRequest ? null : optimisticAiMessageId;
+    const handleMessageReaction = async (messageId: string, reaction: "like" | "dislike") => {
+        if (!activeChat) return;
 
-        } catch (error: any) {
-            console.error(`ChatApp: Error sending message to chat ${chatId}:`, error);
-            // Rollback optimistic updates on error
-            setChatHistory((prev) =>
-                prev.map((chat) => {
-                    if (chat.id === chatId) {
+        // Prevent duplicate reactions
+        const chatIndex = chatHistory.findIndex(chat => chat.id === activeChat);
+        if (chatIndex === -1) return;
+
+        const messageIndex = chatHistory[chatIndex].messages?.findIndex(msg => msg.id === messageId) ?? -1;
+        if (messageIndex === -1) return;
+
+        const message = chatHistory[chatIndex].messages?.[messageIndex];
+        const hasExistingReaction = message?.reactions?.some(
+            r => r.reaction_type.toLowerCase() === reaction.toUpperCase()
+        );
+
+        if (hasExistingReaction) {
+            // If already has this reaction, we'll remove it
+            console.log(`Removing ${reaction} reaction from message ${messageId}`);
+        }
+
+        try {
+            setError(null);
+            const apiReaction = reaction.toUpperCase() as ReactionType;
+
+            // Optimistic update of UI
+            setChatHistory((prevHistory) =>
+                prevHistory.map((chat) => {
+                    if (chat.id === activeChat) {
                         return {
                             ...chat,
-                            messages: (chat.messages || []).filter(msg => !msg.id.startsWith('temp-'))
+                            messages: (chat.messages || []).map((msg) => {
+                                if (msg.id === messageId) {
+                                    // Clear existing reactions
+                                    const newReactions = hasExistingReaction
+                                        ? []
+                                        : [
+                                            {
+                                                id: `temp-${Date.now()}`,
+                                                message_id: messageId,
+                                                reaction_type: apiReaction,
+                                                created_at: new Date().toISOString(),
+                                            },
+                                        ];
+                                    return { ...msg, reactions: newReactions };
+                                }
+                                return msg;
+                            }),
                         };
                     }
                     return chat;
                 })
             );
-            setError(`Failed to send message: ${error.message}`);
-            throw error; // Rethrow
-        }
-    }, [deduplicateAndSortMessages]);
 
-    // Function to handle sending a message (main entry point)
-    const handleSendMessage = useCallback(async (message: string, files?: File[]) => {
-        if ((!message || !message.trim()) && (!files || files.length === 0)) return;
+            // Send actual reaction to API with retry
+            let retryCount = 0;
+            const maxRetries = 2;
+            let success = false;
 
-        let targetChatId = activeChat;
-        let requiresConnection = false; // Flag if connection needs check/establishment
-
-        try {
-            setError(null);
-            let fileIds: string[] = [];
-            let fileReferences: any[] = [];
-
-            // --- File Upload ---
-            if (files && files.length > 0) {
-                setFileUploadProgress(0);
+            while (!success && retryCount <= maxRetries) {
                 try {
-                    const responses = await FileApi.uploadMultipleFiles(files, (progress) => setFileUploadProgress(progress));
-                    fileIds = responses.map(res => res.id.toString());
-                    fileReferences = responses.map(res => ({
-                        id: res.id, name: res.name || res.original_name,
-                        file_type: res.file_type.toString(), preview_url: res.preview_url,
-                    }));
-                } catch(uploadError: any) {
-                    console.error("ChatApp: File upload failed:", uploadError);
-                    setError(`File upload failed: ${uploadError.message}`);
-                    setFileUploadProgress(null); return; // Stop
-                } finally {
-                    setFileUploadProgress(null);
+                    await ChatApi.addReaction(activeChat, messageId, {
+                        reaction_type: apiReaction,
+                    });
+                    success = true;
+                } catch (error) {
+                    console.error(`Error adding reaction (attempt ${retryCount + 1}):`, error);
+                    retryCount++;
+                    if (retryCount <= maxRetries) {
+                        // Wait before retrying
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    } else {
+                        throw error; // Rethrow if all retries failed
+                    }
                 }
             }
-            // --- End File Upload ---
-
-            // --- Ensure Target Chat and Connection ---
-            if (!targetChatId) {
-                console.log("ChatApp: No active chat, creating new one for message.");
-                const chatTitle = message.length > 30 ? message.substring(0, 30) + "..." : message || "Chat with Files";
-                const newChat = await ChatApi.createChat({ title: chatTitle });
-                targetChatId = newChat.id.toString();
-                setChatHistory((prev) => [newChat, ...prev]);
-                setActiveChat(targetChatId); // Set active chat *before* connecting
-                requiresConnection = true; // New chat definitely needs connection
-                console.log(`ChatApp: Set new chat ${targetChatId} as active`);
-            } else {
-                // Check if connection exists for the *current* active chat
-                requiresConnection = !isConnected && connectionState !== WebSocketState.CONNECTING;
-                if (requiresConnection) {
-                    console.log(`ChatApp: WebSocket needs connection for existing chat ${targetChatId}.`);
-                }
-            }
-
-            // Connect if needed *before* sending the message
-            if (requiresConnection) {
-                console.log(`ChatApp: Attempting WebSocket connect for chat ${targetChatId}...`);
-                const connected = await connectWebSocket(targetChatId, !activeChat); // Pass true if it was a new chat
-                if (!connected) {
-                    console.error(`ChatApp: Failed to connect WebSocket for chat ${targetChatId}. Cannot send message.`);
-                    setError("Failed to connect to chat service. Please try again.");
-                    return; // Stop if connection failed
-                }
-                // Optional delay after connection? Might not be needed if connectWebSocket resolves properly.
-                // await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            // --- End Ensure Target Chat and Connection ---
-
-
-            // --- Send Message ---
-            // Make sure targetChatId is set
-            if (!targetChatId) {
-                console.error("ChatApp: targetChatId is still null after connection check. Aborting send.");
-                setError("An internal error occurred. Please select a chat or try again.");
-                return;
-            }
-            // Call the separated function to handle optimistic updates and API call
-            const optimisticAiMsgId = await sendMessageToChat(targetChatId, message, fileIds, fileReferences);
-            // --- End Send Message ---
-
-
-            // --- Start Expecting AI Response ---
-            // Call this *after* sendMessageToChat has successfully completed
-            if (optimisticAiMsgId) {
-                startExpectingAiResponse(optimisticAiMsgId);
-            }
-            // --- End Start Expecting AI Response ---
-
-            setSidebarOpen(false);
-            clearSuggestions();
-
-        } catch (error: any) {
-            console.error("ChatApp: Error in handleSendMessage:", error);
-            // Error is likely already set by sendMessageToChat
-            if (!error) setError(error.message || "Failed to send message.");
-            setFileUploadProgress(null);
+        } catch (error) {
+            console.error(`Error adding reaction to message ${messageId}:`, error);
+            setError("Failed to add reaction. Please try again.");
+            // Refresh the chat to ensure UI is in sync with server
+            loadChat(activeChat);
         }
-    }, [
-        activeChat, isConnected, connectionState, /* Removed sendMessageToChat */ // Avoid direct dependency if possible
-        connectWebSocket, startExpectingAiResponse, clearSuggestions,
-        sendMessageToChat // Add the separated function back as dependency
-    ]);
+    };
 
-
-    // Function to handle message reactions
-    const handleMessageReaction = useCallback(async (messageId: string, reaction: "like" | "dislike") => {
-        if (!activeChat) return;
-
-        let messageExists = false;
-        chatHistory.forEach(chat => { // Check if message exists without modifying state yet
-            if (chat.id === activeChat && (chat.messages || []).some(msg => msg.id === messageId)) {
-                messageExists = true;
-            }
-        });
-        if (!messageExists) return;
-
-        const tempReactionId = `temp-reaction-${Date.now()}`;
-        const apiReactionType = reaction.toUpperCase() as ReactionType;
-
-        // Optimistic UI update
-        setChatHistory(prevHistory =>
-            prevHistory.map(chat => {
-                if (chat.id === activeChat) {
-                    return {
-                        ...chat,
-                        messages: (chat.messages || []).map(msg => {
-                            if (msg.id === messageId) {
-                                // Replace reactions array
-                                const newReactions = [{
-                                    id: tempReactionId, message_id: messageId,
-                                    reaction_type: reaction, // schema expects string, backend ReactionType enum
-                                    created_at: new Date().toISOString(),
-                                }];
-                                return { ...msg, reactions: newReactions };
-                            }
-                            return msg;
-                        }),
-                    };
-                }
-                return chat;
-            })
-        );
-
-        // API Call
+    const handleRequestSupport = async () => {
         try {
             setError(null);
-            await ChatApi.addReaction(activeChat, messageId, { reaction_type: apiReactionType });
-        } catch (error: any) {
-            console.error(`ChatApp: Error sending reaction for message ${messageId}:`, error);
-            setError(`Failed to update reaction: ${error.message}`);
-            loadChatMessages(activeChat); // Revert UI on error
-        }
-    }, [activeChat, chatHistory, loadChatMessages]); // chatHistory needed to check existence
 
-    // Function to handle support request
-    const handleRequestSupport = useCallback(async () => {
-        console.log("ChatApp: Requesting support...");
-        let targetChatId = activeChat;
-        let requiresConnection = false;
+            // Get the target chat ID
+            let targetChatId = activeChat;
 
-        try {
-            setError(null);
             if (!targetChatId) {
+                // Create a new chat if none is active
                 const newChat = await ChatApi.createChat({ title: "Запрос поддержки" });
-                targetChatId = newChat.id.toString();
-                setChatHistory(prev => [newChat, ...prev]);
+                setChatHistory(prev => [...prev, newChat]);
+                targetChatId = newChat.id;
                 setActiveChat(targetChatId);
-                requiresConnection = true;
-            } else {
-                requiresConnection = !isConnected && connectionState !== WebSocketState.CONNECTING;
+                setMessagesLoaded(prev => ({...prev, [targetChatId]: true}));
+                connectWebSocket(targetChatId);
+                await new Promise(resolve => setTimeout(resolve, 500)); // Wait for connection
             }
 
-            if (requiresConnection) {
-                const connected = await connectWebSocket(targetChatId, !activeChat);
-                if (!connected) {
-                    setError("Failed to connect to chat service for support request.");
-                    return;
-                }
-            }
-
-            if (!targetChatId) throw new Error("Target chat ID not set for support request.");
-
+            // Send the user message first
             await sendMessageToChat(targetChatId, "Я хотел бы подключиться к оператору поддержки.");
 
-        } catch (error: any) {
-            console.error("ChatApp: Error requesting support:", error);
-            setError(`Failed to request support: ${error.message}`);
-        }
-    }, [activeChat, isConnected, connectionState, connectWebSocket, sendMessageToChat]);
+            // Create optimistic system message first for UI responsiveness
+            const optimisticSystemMessage: ChatMessage = {
+                id: `temp-system-${Date.now()}`,
+                chat_id: targetChatId,
+                content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
+                message_type: "SYSTEM",
+                status: MessageStatus.COMPLETED,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+            };
 
-    // Function to handle suggestion click
-    const handleSuggestionClick = useCallback((text: string) => {
-        handleSendMessage(text);
-    }, [handleSendMessage]);
+            // Add optimistic system message to chat history
+            setChatHistory(prevHistory =>
+                prevHistory.map(chat => {
+                    if (chat.id === targetChatId) {
+                        // Check if this system message already exists to avoid duplicates
+                        const hasSimilarSystemMessage = (chat.messages || []).some(
+                            msg =>
+                                (msg.message_type === "SYSTEM" || msg.message_type === "system") &&
+                                msg.content.includes("Запрос на соединение с оператором")
+                        );
 
-    // --- Effects ---
-
-    // Load chats on initial mount or when user changes
-    useEffect(() => {
-        if (user && !initialLoadCompleteRef.current) {
-            loadChats();
-        } else if (!user) {
-            setChatHistory([]);
-            setActiveChat(null);
-            setIsLoadingChats(true);
-            initialLoadCompleteRef.current = false;
-            disconnectWebSocket();
-        }
-    }, [user, loadChats, disconnectWebSocket]);
-
-    // Connect/Disconnect WebSocket based on activeChat and user status
-    useEffect(() => {
-        const chatId = activeChat; // Capture current activeChat
-
-        const manageConnection = async () => {
-            if (chatId && user) {
-                console.log(`ChatApp Effect: Ensuring connection for chat ${chatId}... State: ${connectionState}`);
-                // Only connect if not already open or connecting
-                if (connectionState !== WebSocketState.OPEN && connectionState !== WebSocketState.CONNECTING) {
-                    // Load messages first if needed
-                    const chatData = chatHistory.find(c => c.id === chatId);
-                    const needsLoad = !chatData?.messages?.length;
-                    if (needsLoad) {
-                        await loadChatMessages(chatId);
-                        // Check if chat changed during load
-                        if (activeChat !== chatId) {
-                            console.log(`ChatApp Effect: Chat changed from ${chatId} after loading messages. Aborting connection.`);
-                            return;
+                        if (hasSimilarSystemMessage) {
+                            return chat; // Don't add duplicate system messages
                         }
+
+                        const existingMessages = chat.messages || [];
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, optimisticSystemMessage]);
+
+                        return {
+                            ...chat,
+                            messages: updatedMessages,
+                            updated_at: new Date().toISOString(),
+                        };
                     }
-                    console.log(`ChatApp Effect: Calling connectWebSocket for ${chatId}`);
-                    await connectWebSocket(chatId, false);
-                } else {
-                    console.log(`ChatApp Effect: Skipping connect for ${chatId} (already connected/connecting)`);
-                }
-            } else if (!chatId && isConnected) {
-                // Disconnect if no chat is active and we are connected
-                console.log("ChatApp Effect: No active chat and WS is connected, disconnecting.");
+                    return chat;
+                })
+            );
+
+            // Create and send actual system message
+            try {
+                const systemMessage = await ChatApi.sendSystemMessage(targetChatId, {
+                    content: "Запрос на соединение с оператором отправлен. Пожалуйста, ожидайте, оператор присоединится к чату в ближайшее время.",
+                    message_type: "SYSTEM"
+                });
+
+                console.log('System message created:', systemMessage);
+
+                // Replace optimistic system message with real one
+                setChatHistory(prevHistory =>
+                    prevHistory.map(chat => {
+                        if (chat.id === targetChatId) {
+                            return {
+                                ...chat,
+                                messages: (chat.messages || []).map(msg =>
+                                    msg.id === optimisticSystemMessage.id ? systemMessage : msg
+                                ),
+                                updated_at: new Date().toISOString(),
+                            };
+                        }
+                        return chat;
+                    })
+                );
+            } catch (error) {
+                console.error("Error sending system message:", error);
+                // Keep the optimistic message - no need to remove it
+            }
+        } catch (error) {
+            console.error("Error requesting support:", error);
+            setError("Failed to request support. Please try again.");
+        }
+    };
+
+    const handleSuggestionClick = (text: string) => {
+        handleSendMessage(text);
+    };
+
+    // Load chats when the component mounts
+    useEffect(() => {
+        if (user) {
+            loadChats();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user]);
+
+    // Load chat and connect to WebSocket when activeChat changes
+    useEffect(() => {
+        if (activeChat) {
+            // Check if messages are already loaded for this chat
+            const hasLoadedMessages = messagesLoaded[activeChat];
+
+            if (!hasLoadedMessages) {
+                loadChat(activeChat).then(() => {
+                    connectWebSocket(activeChat);
+                });
+            } else {
+                connectWebSocket(activeChat);
+            }
+        }
+
+        // Cleanup function to disconnect WebSocket when changing chats
+        return () => {
+            if (activeChat && isConnected) {
                 disconnectWebSocket();
             }
         };
+    }, [activeChat, isConnected, messagesLoaded]);
 
-        manageConnection();
-
-        // No cleanup disconnect needed here, handled by disconnectWebSocket calls
-
-    }, [activeChat, user, isConnected, connectionState, connectWebSocket, disconnectWebSocket, loadChatMessages, chatHistory]); // Added chatHistory back
-
-
-    // Process completed messages from WebSocket context
+    // Update chat history when a message is completed
     useEffect(() => {
-        if (lastCompletedMessage && activeChat) {
-            console.log(`ChatApp: Processing completed message ${lastCompletedMessage.id} for chat ${activeChat}`);
-            setChatHistory((prevHistory) => {
-                const chatIndex = prevHistory.findIndex(chat => chat.id === activeChat);
-                if (chatIndex === -1) return prevHistory;
+        if (lastCompletedMessage && activeChat && isConnected) {
+            console.log("Processing completed message:", lastCompletedMessage.id, "for active chat:", activeChat);
+            setChatHistory((prevHistory) =>
+                prevHistory.map((chat) => {
+                    if (chat.id === activeChat) {
+                        const existingMessages = chat.messages || [];
+                        const newMessage: ChatMessage = {
+                            id: lastCompletedMessage.id,
+                            chat_id: activeChat,
+                            content: lastCompletedMessage.content,
+                            message_type: "ai",
+                            status: MessageStatus.COMPLETED,
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString(),
+                            sources: [],
+                            reactions: [],
+                            files: [],
+                        };
 
-                const updatedChat = { ...prevHistory[chatIndex] };
-                const existingMessages = updatedChat.messages || [];
-                const existingMsgIndex = existingMessages.findIndex(msg => msg.id === lastCompletedMessage.id);
-                let newMessages;
-                const finalMessageData: ChatMessage = {
-                    id: lastCompletedMessage.id, chat_id: activeChat,
-                    content: lastCompletedMessage.content, message_type: MessageType.AI,
-                    status: MessageStatus.COMPLETED, created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(), sources: lastCompletedMessage.sources || [],
-                    files: [], reactions: [],
-                };
+                        // Add/Update the message using the helper function
+                        const updatedMessages = deduplicateAndSortMessages([...existingMessages, newMessage]);
 
-                if (existingMsgIndex !== -1) {
-                    newMessages = [...existingMessages];
-                    newMessages[existingMsgIndex] = finalMessageData;
-                } else {
-                    // If message wasn't found (e.g., optimistic removed), add it.
-                    console.warn(`Completed message ${lastCompletedMessage.id} not found in existing messages, adding.`);
-                    newMessages = [...existingMessages, finalMessageData];
-                }
+                        return {
+                            ...chat,
+                            messages: updatedMessages,
+                            updated_at: new Date().toISOString(),
+                        };
+                    }
+                    return chat;
+                })
+            );
 
-                updatedChat.messages = deduplicateAndSortMessages(newMessages);
-                updatedChat.updated_at = new Date().toISOString();
-
-                const otherChats = prevHistory.filter(chat => chat.id !== activeChat);
+            // Move the active chat to the top of the list
+            setChatHistory(prev => {
+                const updatedChat = prev.find(chat => chat.id === activeChat);
+                if (!updatedChat) return prev;
+                const otherChats = prev.filter(chat => chat.id !== activeChat);
                 return [updatedChat, ...otherChats];
             });
+
+            // Clear the processed message from the context state
             clearLastCompletedMessage();
         }
-    }, [lastCompletedMessage, activeChat, deduplicateAndSortMessages, clearLastCompletedMessage]);
+    }, [lastCompletedMessage, activeChat, isConnected, deduplicateAndSortMessages, clearLastCompletedMessage]);
 
     // Set mounted state
-    useEffect(() => setMounted(true), []);
-    if (!mounted) return null;
+    useEffect(() => {
+        setMounted(true);
+    }, []);
 
-    // Determine UI states
-    const isEffectivelyNewChat = !activeChat || (currentChat && (!currentChat.messages || currentChat.messages.length === 0) && !isTyping && !expectingAiResponse && !pendingMessageId);
-    const suggestionsForInput = chatSuggestions.length > 0 ? chatSuggestions : isEffectivelyNewChat ? initialSuggestions : [];
-    const isUploading = fileUploadProgress !== null;
-    // Show warning only if CLOSED *and* there was an error *and* it's not the initial load state
-    const showConnectionWarning = connectionState === WebSocketState.CLOSED && !!lastConnectionError && !!activeChat && !isLoadingChats;
-    const showConnectingIndicator = connectionState === WebSocketState.CONNECTING;
-    const isInputDisabled = (connectionState !== WebSocketState.OPEN && !!activeChat) || // Disabled if not connected (and a chat is active)
-        isTyping || isUploading || expectingAiResponse || isLoadingMessages; // Also disable while loading messages
+    if (!mounted) {
+        return null;
+    }
 
+    // Determine if the current state represents a new, empty chat
+    const isEffectivelyNewChat = !activeChat || (currentChat && (!currentChat.messages || currentChat.messages.length === 0) && !isTyping && !pendingMessageId);
+
+    // Decide which suggestions to show in the input
+    const suggestionsForInput = chatSuggestions.length > 0
+        ? chatSuggestions // Prioritize AI suggestions from context if they exist
+        : isEffectivelyNewChat
+            ? initialSuggestions // Fallback to default suggestions for a new/empty chat state
+            : []; // Otherwise, no suggestions (e.g., existing chat without AI suggestions yet)
 
     return (
         <div className="flex h-screen bg-background text-foreground overflow-hidden">
             {/* Error notification */}
             {error && (
-                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded w-full max-w-md flex justify-between items-center shadow-lg">
+                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded w-full max-w-md flex justify-between items-center">
                     <span>{error}</span>
                     <button onClick={() => setError(null)} className="ml-4 text-red-700 hover:text-red-900">
                         <X size={16} />
@@ -644,38 +699,18 @@ const ChatAppContent = () => {
                 </div>
             )}
 
-            {/* Connection Status Indicator */}
-            {showConnectionWarning && (
-                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-2 rounded w-full max-w-lg flex justify-between items-center shadow-lg text-sm">
-                    <div className="flex items-center gap-2">
-                        <WifiOff size={16} className="text-yellow-600"/>
-                        <span>Соединение потеряно. Попытка переподключения...</span>
-                    </div>
-                    <span className="text-xs text-yellow-600 truncate ml-2" title={lastConnectionError?.reason ?? lastConnectionError?.error?.message}>
-                        ({lastConnectionError?.reason ?? lastConnectionError?.error?.message ?? `Code: ${lastConnectionError?.code}`})
-                    </span>
-                </div>
-            )}
-            {showConnectingIndicator && (
-                <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-blue-100 border border-blue-400 text-blue-800 px-4 py-2 rounded w-full max-w-md flex items-center justify-center gap-2 shadow-lg text-sm">
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-700"></div>
-                    <span>Подключение к чату...</span>
-                </div>
-            )}
-
-
             {/* File upload progress overlay */}
             {fileUploadProgress !== null && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm">
-                    <div className="bg-card rounded-lg p-6 max-w-sm w-full shadow-xl">
-                        <h3 className="text-lg font-medium mb-4 text-card-foreground">Загрузка файлов</h3>
-                        <div className="w-full bg-muted rounded-full h-2.5 mb-4 overflow-hidden">
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-sm w-full">
+                        <h3 className="text-lg font-medium mb-4">Загрузка файлов</h3>
+                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 mb-4">
                             <div
-                                className="bg-primary h-2.5 rounded-full transition-all duration-300 ease-out"
+                                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
                                 style={{ width: `${fileUploadProgress}%` }}
                             ></div>
                         </div>
-                        <p className="text-sm text-muted-foreground text-center">
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
                             {fileUploadProgress}% загружено...
                         </p>
                     </div>
@@ -683,61 +718,57 @@ const ChatAppContent = () => {
             )}
 
             {/* Mobile Header */}
-            <div className="md:hidden fixed top-0 left-0 right-0 z-20 border-b bg-background/95 backdrop-blur-sm p-4 flex items-center justify-between">
+            <div className="md:hidden fixed top-0 left-0 right-0 z-20 border-b border-gray-200 dark:border-gray-700 bg-background p-4 flex items-center justify-between">
                 <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(!sidebarOpen)} className="flex md:hidden">
                     {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
                 </Button>
-                <div className="flex-1 min-w-0 mx-2">
-                    <h1 className="text-lg font-semibold truncate">
-                        {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
-                    </h1>
-                </div>
+                <h1 className="text-lg font-semibold truncate">
+                    {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
+                </h1>
                 <div className="flex items-center gap-2">
                     <ThemeToggle />
-                    {user?.is_admin && (
-                        <Link href="/admin">
-                            <Button variant="ghost" size="icon" title="Админ панель"> <Shield size={20} /> </Button>
-                        </Link>
-                    )}
+                    <Button variant="ghost" size="icon" onClick={logout} title="Выйти">
+                        <LogOut size={20} />
+                    </Button>
                 </div>
             </div>
 
             {/* Sidebar */}
             <div
                 className={cn(
-                    "fixed inset-0 z-30 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:w-72 border-r bg-background md:bg-muted/30 flex flex-col",
+                    "fixed inset-0 z-10 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 md:w-72 border-r border-gray-200 dark:border-gray-700 bg-background md:bg-muted/30 flex flex-col",
                     sidebarOpen ? "translate-x-0" : "-translate-x-full"
                 )}
             >
                 <ChatSidebar
-                    chats={chatHistory} activeChat={activeChat || ""} onChatSelect={handleChatSelect}
-                    onNewChat={createNewChat} sidebarOpen={sidebarOpen} onCloseSidebar={() => setSidebarOpen(false)}
+                    chats={chatHistory}
+                    activeChat={activeChat || ""}
+                    onChatSelect={handleChatSelect}
+                    onNewChat={createNewChat}
+                    sidebarOpen={sidebarOpen}
+                    onCloseSidebar={() => setSidebarOpen(false)}
+                    isLoading={isLoadingChats}
                     user={user}
                     onLogout={logout}
                 />
             </div>
-            {/* Sidebar overlay for mobile */}
+
             {sidebarOpen && (
-                <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={() => setSidebarOpen(false)} />
+                <div className="fixed inset-0 bg-black/50 z-[5] md:hidden" onClick={() => setSidebarOpen(false)} />
             )}
 
             {/* Main Chat Area */}
-            <div className="flex-1 flex flex-col pt-16 md:pt-0"> {/* Increased mobile top padding */}
+            <div className="flex-1 flex flex-col pt-14 md:pt-0">
                 {/* Desktop Header */}
-                <div className="border-b p-4 hidden md:flex md:justify-between md:items-center sticky top-0 bg-background/95 backdrop-blur-sm z-10">
-                    <div className="flex-1 min-w-0 mr-4">
-                        <h1 className="text-xl font-semibold line-clamp-2">
-                            {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
-                        </h1>
-                    </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="border-b border-gray-200 dark:border-gray-700 p-4 hidden md:flex md:justify-between md:items-center">
+                    <h1 className="text-xl font-semibold">
+                        {currentChat ? currentChat.title : "Портал Поставщиков - Чат"}
+                    </h1>
+                    <div className="flex items-center gap-2">
                         <ThemeToggle />
-                        {user?.is_admin && (
-                            <Link href="/admin">
-                                <Button variant="ghost" size="icon" title="Админ панель"> <Shield size={20} /> </Button>
-                            </Link>
-                        )}
-                        <Button variant="ghost" size="icon" onClick={logout} title="Выйти"> <LogOut size={20} /> </Button>
+                        <Button variant="ghost" size="icon" onClick={logout} title="Выйти">
+                            <LogOut size={20} />
+                        </Button>
                     </div>
                 </div>
 
@@ -745,9 +776,8 @@ const ChatAppContent = () => {
                 <div className="flex-1 flex flex-col min-h-0">
                     <MessageManager
                         currentChat={currentChat}
-                        isLoadingChats={isLoadingChats || isLoadingMessages}
+                        isLoadingChats={isLoadingChats}
                         isTyping={isTyping}
-                        expectingAiResponse={expectingAiResponse}
                         pendingMessageId={pendingMessageId}
                         streamedContent={streamedContent}
                         onMessageReaction={handleMessageReaction}
@@ -755,14 +785,14 @@ const ChatAppContent = () => {
                     />
                 </div>
 
-                {/* Chat Input */}
-                <div className="flex-shrink-0 border-t">
+                {/* Chat Input - Fixed at bottom */}
+                <div className="flex-shrink-0">
                     <ChatInput
                         onSendMessage={handleSendMessage}
                         onRequestSupport={handleRequestSupport}
-                        isLoading={isInputDisabled} // Use combined loading/state flag
+                        isLoading={isLoadingChats}
                         isTyping={isTyping}
-                        isUploading={isUploading}
+                        isUploading={fileUploadProgress !== null}
                         suggestions={suggestionsForInput}
                         aiSuggestions={chatSuggestions}
                         onSuggestionClick={handleSuggestionClick}
